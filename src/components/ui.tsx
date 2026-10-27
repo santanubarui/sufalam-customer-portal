@@ -9,6 +9,43 @@ export function Brandmark() {
   )
 }
 
+/** Split public screen (sign in, forgot password): brand hero on the left, form panel on the right. */
+export function PublicLayout({ children }: { children: ReactNode }) {
+  return (
+    <div className="public-wrap">
+      <div className="public-hero">
+        <div className="brandline">
+          <Brandmark />
+          <h1>
+            Sufalam Industries Limited<small>Customer Portal</small>
+          </h1>
+        </div>
+        <div className="pitch">
+          <h2>Order, pay &amp; track — all in one place.</h2>
+          <p>
+            Upload purchase orders, get confirmed delivery dates, pay proforma invoices online and view your live
+            outstanding — connected in real time with Sufalam's SAP Business One.
+          </p>
+          <div className="hero-steps">
+            <div>
+              <b>01</b>Register &amp; get approved
+            </div>
+            <div>
+              <b>02</b>Upload your PO
+            </div>
+            <div>
+              <b>03</b>Pay &amp; track delivery
+            </div>
+          </div>
+        </div>
+        <footer>Powered by SAS Infosystem Pvt. Ltd. · SAP Business One HANA</footer>
+      </div>
+
+      <div className="public-panel">{children}</div>
+    </div>
+  )
+}
+
 export function Tag({ tone, children }: { tone: TagTone; children: ReactNode }) {
   return <span className={`tag ${tone}`}>{children}</span>
 }

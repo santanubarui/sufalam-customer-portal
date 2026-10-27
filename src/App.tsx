@@ -2,13 +2,14 @@ import { Navigate, NavLink, Route, Routes } from 'react-router-dom'
 import AppLayout from './components/AppLayout'
 import Login from './pages/Login'
 import Register from './pages/Register'
+import ForgotPassword from './pages/ForgotPassword'
 import Dashboard from './pages/Dashboard'
 import CreatePO from './pages/CreatePO'
 import Orders from './pages/Orders'
 import Payments from './pages/Payments'
 import InTransit from './pages/InTransit'
 import Statements from './pages/Statements'
-import { PortalProvider, ProfileMenu } from './components/header'
+import { PortalProvider, ProfileMenu, usePortal } from './components/header'
 
 const screens = [
   { to: '/dashboard', label: 'Dashboard' },
@@ -20,6 +21,10 @@ const screens = [
 ]
 
 function ThemeBar() {
+  const { signedIn } = usePortal()
+  // hidden on login / register / forgot-password until the user signs in
+  if (!signedIn) return null
+
   return (
     <div className="theme-bar">
       <ProfileMenu variant="dark" showName />
@@ -44,6 +49,7 @@ export default function App() {
       <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
+      <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route element={<AppLayout />}>
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/orders" element={<Orders />} />

@@ -111,6 +111,11 @@ a{color:var(--purple-700);text-decoration:none}
 .auth-links{display:flex;justify-content:space-between;font-size:.82rem;margin-top:.9rem}
 .divider{display:flex;align-items:center;gap:.8rem;color:var(--muted);font-size:.75rem;margin:1.3rem 0}
 .divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--line)}
+.auth-card .linkbtn{background:none;border:none;padding:0;font-size:inherit;color:var(--purple-700)}
+.auth-card .linkbtn:hover,.auth-links a:hover{text-decoration:underline}
+.otp-input{letter-spacing:.6em;font-family:'Outfit',sans-serif;font-size:1.15rem!important;text-align:center}
+.form-error{background:var(--red-bg);color:var(--red);border-radius:10px;padding:.55rem .8rem;font-size:.8rem;margin:-.2rem 0 1rem}
+.auth-success{width:56px;height:56px;border-radius:50%;display:grid;place-items:center;background:var(--green-100);color:var(--green-700);font-size:1.5rem;font-weight:700;margin-bottom:1.1rem}
 
 /* ===== Registration ===== */
 .reg-wrap{max-width:920px;margin:2.2rem auto;padding:0 1.2rem}
