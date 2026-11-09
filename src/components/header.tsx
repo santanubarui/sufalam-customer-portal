@@ -1,50 +1,205 @@
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { attention, customer } from '../data/mock'
+import { onSessionExpired, sapLogin, sapLogout } from '../api/sap'
+import {
+  getCustomer,
+  getDeliveries,
+  getOpenInvoices,
+  getPendingProformas,
+  type Customer,
+} from '../api/portal'
+import { errorMessage } from '../api/sap'
 import { rupees } from '../utils/format'
+import { useToast } from './toast'
 
 /* ===== session + notification state shared by every header ===== */
 
-const SESSION_KEY = 'sufalam.signedIn'
+const SESSION_KEY = 'sufalam.session'
 
-const readSession = () => {
+interface StoredSession {
+  cardCode: string
+  userName: string
+  companyDB: string
+}
+
+const readSession = (): StoredSession | null => {
   try {
-    return sessionStorage.getItem(SESSION_KEY) === '1'
+    const raw = sessionStorage.getItem(SESSION_KEY)
+    return raw ? (JSON.parse(raw) as StoredSession) : null
   } catch {
-    return false
+    return null
   }
 }
 
-const Portal = createContext<{
+const writeSession = (s: StoredSession | null) => {
+  try {
+    s ? sessionStorage.setItem(SESSION_KEY, JSON.stringify(s)) : sessionStorage.removeItem(SESSION_KEY)
+  } catch {
+    /* storage blocked — state still works for this tab */
+  }
+}
+
+export interface SignInInput {
+  companyDB: string
+  userName: string
+  password: string
+  cardCode: string
+}
+
+export interface Alert {
+  color: string
+  title: string
+  amount?: number
+  note: string
+  to: string
+}
+
+interface PortalState {
   signedIn: boolean
-  signIn: () => void
-  signOut: () => void
+  session: StoredSession | null
+  customer: Customer | null
+  customerLoading: boolean
+  customerError: string | null
+  signIn: (input: SignInInput) => Promise<Customer>
+  signOut: () => Promise<void>
+  refreshCustomer: () => void
+  alerts: Alert[]
+  counts: { pis: number; inTransit: number; overdue: number }
+  refreshAlerts: () => void
   unread: number
   markAllRead: () => void
-} | null>(null)
+}
+
+const Portal = createContext<PortalState | null>(null)
+
+async function loadAlerts(cardCode: string) {
+  const [pis, deliveries, invoices] = await Promise.all([
+    getPendingProformas(cardCode),
+    getDeliveries(cardCode),
+    getOpenInvoices(cardCode),
+  ])
+  const overdue = invoices.filter((i) => i.daysOverdue > 0)
+  const alerts: Alert[] = []
+  pis.forEach((p) =>
+    alerts.push({ color: 'var(--purple-600)', title: `${p.pi} ready for payment`, amount: p.amount, note: `Against ${p.ref}`, to: '/payments' }),
+  )
+  deliveries.inTransit.forEach((d) =>
+    alerts.push({ color: 'var(--green-600)', title: `${d.dn} in transit`, note: `${d.item} · ${d.qty} · acknowledge on receipt`, to: '/in-transit' }),
+  )
+  if (overdue.length) {
+    alerts.push({
+      color: 'var(--red)',
+      title: `${overdue.length} invoice${overdue.length > 1 ? 's' : ''} overdue`,
+      amount: overdue.reduce((s, i) => s + i.balance, 0),
+      note: `Oldest ${Math.max(...overdue.map((i) => i.daysOverdue))} days past due date`,
+      to: '/statements',
+    })
+  }
+  return { alerts, counts: { pis: pis.length, inTransit: deliveries.inTransit.length, overdue: overdue.length } }
+}
 
 export function PortalProvider({ children }: { children: ReactNode }) {
-  const [signedIn, setSignedIn] = useState(readSession)
-  const [unread, setUnread] = useState(attention.length)
+  const toast = useToast()
+  const [session, setSession] = useState<StoredSession | null>(readSession)
+  const [customer, setCustomer] = useState<Customer | null>(null)
+  const [customerLoading, setCustomerLoading] = useState(!!session)
+  const [customerError, setCustomerError] = useState<string | null>(null)
+  const [alerts, setAlerts] = useState<Alert[]>([])
+  const [counts, setCounts] = useState({ pis: 0, inTransit: 0, overdue: 0 })
+  const [unread, setUnread] = useState(0)
 
-  const persist = (v: boolean) => {
-    setSignedIn(v)
+  const clear = useCallback(() => {
+    writeSession(null)
+    setSession(null)
+    setCustomer(null)
+    setCustomerError(null)
+    setAlerts([])
+    setCounts({ pis: 0, inTransit: 0, overdue: 0 })
+    setUnread(0)
+  }, [])
+
+  // Any 401 from Service Layer ends the portal session.
+  const sessionRef = useRef(session)
+  sessionRef.current = session
+  useEffect(() => {
+    onSessionExpired(() => {
+      if (!sessionRef.current) return
+      clear()
+      toast.error('Session expired', 'Your SAP session timed out. Please sign in again.')
+    })
+    return () => onSessionExpired(null)
+  }, [clear, toast])
+
+  const refreshCustomer = useCallback(() => {
+    if (!session) return
+    setCustomerLoading(true)
+    setCustomerError(null)
+    getCustomer(session.cardCode)
+      .then(setCustomer)
+      .catch((e) => setCustomerError(errorMessage(e)))
+      .finally(() => setCustomerLoading(false))
+  }, [session])
+
+  // restore customer after a page reload (SL cookie is still valid)
+  useEffect(() => {
+    if (session && !customer) refreshCustomer()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session])
+
+  const refreshAlerts = useCallback(() => {
+    if (!session) return
+    loadAlerts(session.cardCode)
+      .then((r) => {
+        setAlerts(r.alerts)
+        setCounts(r.counts)
+        setUnread(r.alerts.length)
+      })
+      .catch(() => {
+        /* alerts are secondary — pages show their own errors */
+      })
+  }, [session])
+
+  useEffect(() => {
+    if (customer) refreshAlerts()
+  }, [customer, refreshAlerts])
+
+  const signIn = useCallback(async (input: SignInInput) => {
+    await sapLogin({ CompanyDB: input.companyDB, UserName: input.userName, Password: input.password })
+    let c: Customer
     try {
-      v ? sessionStorage.setItem(SESSION_KEY, '1') : sessionStorage.removeItem(SESSION_KEY)
-    } catch {
-      /* storage blocked — state still works for this tab */
+      c = await getCustomer(input.cardCode.trim())
+    } catch (e) {
+      await sapLogout()
+      throw e
     }
-  }
+    const s = { cardCode: c.code, userName: input.userName, companyDB: input.companyDB }
+    writeSession(s)
+    setCustomer(c)
+    setCustomerError(null)
+    setCustomerLoading(false)
+    setSession(s)
+    return c
+  }, [])
+
+  const signOut = useCallback(async () => {
+    await sapLogout()
+    clear()
+  }, [clear])
 
   return (
     <Portal.Provider
       value={{
-        signedIn,
-        signIn: () => persist(true),
-        signOut: () => {
-          persist(false)
-          setUnread(attention.length)
-        },
+        signedIn: !!session,
+        session,
+        customer,
+        customerLoading,
+        customerError,
+        signIn,
+        signOut,
+        refreshCustomer,
+        alerts,
+        counts,
+        refreshAlerts,
         unread,
         markAllRead: () => setUnread(0),
       }}
@@ -58,6 +213,13 @@ export function usePortal() {
   const ctx = useContext(Portal)
   if (!ctx) throw new Error('usePortal must be used inside <PortalProvider>')
   return ctx
+}
+
+/** For pages rendered inside AppLayout, where the customer is guaranteed to be loaded. */
+export function useCustomer() {
+  const { customer } = usePortal()
+  if (!customer) throw new Error('useCustomer used before the customer was loaded')
+  return customer
 }
 
 /** Open/close state for a dropdown that closes on outside click or Escape. */
@@ -80,27 +242,42 @@ function useDropdown() {
   return { open, setOpen, ref, close: () => setOpen(false) }
 }
 
+/** Signs out of SAP, shows the result and returns to the login screen. */
+export function useSignOut() {
+  const { signOut } = usePortal()
+  const toast = useToast()
+  const navigate = useNavigate()
+  return async () => {
+    await signOut()
+    toast.success('Signed out', 'Your SAP session has been closed.')
+    navigate('/login')
+  }
+}
+
 /* ===== profile section (avatar + dropdown) ===== */
 
 export function ProfileMenu({ variant = 'light', showName = false }: { variant?: 'light' | 'dark'; showName?: boolean }) {
-  const { signedIn, signOut } = usePortal()
-  const navigate = useNavigate()
+  const { signedIn, customer, session } = usePortal()
+  const signOut = useSignOut()
   const dd = useDropdown()
 
   const onSignOut = () => {
     dd.close()
-    signOut()
-    navigate('/login')
+    void signOut()
   }
+
+  const name = customer?.name ?? session?.cardCode ?? 'Guest'
+  const sub = customer ? `${customer.code}${customer.state ? ` · ${customer.state}` : ''}` : 'Not signed in'
+  const initials = customer?.initials ?? '…'
 
   return (
     <div className={`dd profile ${variant}`} ref={dd.ref}>
       <button className="profile-btn" onClick={() => dd.setOpen((o) => !o)} aria-expanded={dd.open}>
-        <span className={`avatar ${signedIn ? '' : 'guest'}`}>{signedIn ? customer.initials : '👤'}</span>
+        <span className={`avatar ${signedIn ? '' : 'guest'}`}>{signedIn ? initials : '👤'}</span>
         {showName && (
           <span className="profile-name">
-            <b>{signedIn ? customer.name : 'Guest'}</b>
-            <small>{signedIn ? `${customer.code} · ${customer.state}` : 'Not signed in'}</small>
+            <b>{signedIn ? name : 'Guest'}</b>
+            <small>{signedIn ? sub : 'Not signed in'}</small>
           </span>
         )}
         <span className="caret">▾</span>
@@ -111,11 +288,12 @@ export function ProfileMenu({ variant = 'light', showName = false }: { variant?:
           {signedIn ? (
             <>
               <div className="dd-head">
-                <span className="avatar">{customer.initials}</span>
+                <span className="avatar">{initials}</span>
                 <div>
-                  <b>{customer.name}</b>
+                  <b>{name}</b>
                   <small>
-                    {customer.code} · {customer.state}
+                    {sub}
+                    {session ? ` · SAP user ${session.userName}` : ''}
                   </small>
                 </div>
               </div>
@@ -159,7 +337,7 @@ export function ProfileMenu({ variant = 'light', showName = false }: { variant?:
 /* ===== notifications bell ===== */
 
 export function NotificationBell() {
-  const { unread, markAllRead } = usePortal()
+  const { unread, markAllRead, alerts } = usePortal()
   const dd = useDropdown()
 
   return (
@@ -181,11 +359,20 @@ export function NotificationBell() {
             )}
           </div>
           <ul className="mini-list">
-            {attention.map((a) => (
+            {alerts.length === 0 && (
+              <li>
+                <div>
+                  <small>Nothing needs your attention right now.</small>
+                </div>
+              </li>
+            )}
+            {alerts.map((a) => (
               <li key={a.title} className={unread ? 'unread' : ''}>
                 <span className="bdot" style={{ background: a.color }} />
                 <div>
-                  <b>{a.title}</b>
+                  <Link to={a.to} onClick={dd.close}>
+                    <b>{a.title}</b>
+                  </Link>
                   {a.amount ? ` — ${rupees(a.amount)}` : ''}
                   <small>{a.note}</small>
                 </div>

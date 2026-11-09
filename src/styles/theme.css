@@ -304,3 +304,39 @@ th.num{text-align:right}
 @media(max-width:640px){
   .credit-chip,.hdr-cta{display:none}
 }
+
+/* ===== toasts (success / error / info) ===== */
+.toasts{position:fixed;right:1rem;bottom:1rem;z-index:200;display:flex;flex-direction:column;gap:.6rem;width:min(380px,calc(100vw - 2rem))}
+.toast{display:flex;align-items:flex-start;gap:.7rem;background:#fff;border:1px solid var(--line);border-left:4px solid var(--muted);border-radius:12px;padding:.75rem .8rem;box-shadow:0 12px 32px -8px rgba(23,37,29,.3);animation:toast-in .2s ease-out}
+.toast.success{border-left-color:var(--green-600)}
+.toast.error{border-left-color:var(--red)}
+.toast.info{border-left-color:var(--purple-600)}
+.toast-ic{flex:none;width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:.75rem;font-weight:800;color:#fff;background:var(--muted)}
+.toast.success .toast-ic{background:var(--green-600)}
+.toast.error .toast-ic{background:var(--red)}
+.toast.info .toast-ic{background:var(--purple-600)}
+.toast-body{flex:1;min-width:0;font-size:.82rem}
+.toast-body b{display:block}
+.toast-body small{display:block;color:var(--muted);margin-top:.15rem;line-height:1.4}
+.toast-x{flex:none;border:0;background:none;color:var(--muted);font-size:.8rem;padding:.1rem .2rem}
+@keyframes toast-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+/* ===== loading / error states ===== */
+.state-box{display:flex;align-items:center;gap:.8rem;padding:1.4rem 1.2rem;font-size:.85rem;color:var(--muted)}
+.state-box.loading{flex-direction:column;justify-content:center;text-align:center;gap:.9rem;min-height:180px;width:100%;padding:2rem 1rem}
+.state-box.loading .spinner{width:32px;height:32px;border-width:3px}
+.state-box.error{background:var(--red-bg);color:var(--red);border-radius:12px;margin:.6rem}
+.state-box.error div{flex:1}
+.state-box.error b{display:block}
+.state-box.error small{display:block;margin-top:.15rem}
+.state-ic{flex:none;width:24px;height:24px;border-radius:50%;background:var(--red);color:#fff;display:grid;place-items:center;font-weight:800}
+.spinner{width:18px;height:18px;border-radius:50%;border:2px solid var(--line);border-top-color:var(--green-600);animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.boot{min-height:70vh;display:grid;place-items:center;padding:1rem}
+.boot>div{width:min(520px,100%)}
+button:disabled{opacity:.6;cursor:not-allowed}
+
+@media print{
+  .theme-bar,.side,.app-header,.topbar button,.toasts,.card .hd input,.card .hd button{display:none!important}
+  .main{margin:0!important}
+}

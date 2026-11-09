@@ -1,22 +1,27 @@
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { NotificationBell } from '../components/header'
-import { Card, DateChip, Tag } from '../components/ui'
-import { orders, statusTone, type OrderStatus } from '../data/mock'
+import { NotificationBell, useCustomer } from '../components/header'
+import { Async, Card, DateChip, EmptyRow, Tag } from '../components/ui'
+import { getOrders, statusTone, type OrderStatus } from '../api/portal'
+import { useAsync } from '../hooks/useAsync'
 import { rupees } from '../utils/format'
 
-const filters: (OrderStatus | 'All')[] = ['All', 'Awaiting approval', 'Confirmed', 'PI raised', 'In-Transit', 'Delivered']
+const filters: (OrderStatus | 'All')[] = ['All', 'Awaiting approval', 'Open', 'Closed', 'Cancelled']
 
 export default function Orders() {
+  const customer = useCustomer()
   const [filter, setFilter] = useState<OrderStatus | 'All'>('All')
   const [params] = useSearchParams()
   const [query, setQuery] = useState(params.get('q') ?? '')
+
+  const state = useAsync((signal) => getOrders(customer.code, signal), [customer.code])
+  const orders = state.data ?? []
 
   const q = query.trim().toLowerCase()
   const rows = orders.filter(
     (o) =>
       (filter === 'All' || o.status === filter) &&
-      (!q || o.po.toLowerCase().includes(q) || (o.so ?? '').toLowerCase().includes(q)),
+      (!q || o.po.toLowerCase().includes(q) || (o.so ?? '').toLowerCase().includes(q) || o.item.toLowerCase().includes(q)),
   )
 
   return (
@@ -26,6 +31,9 @@ export default function Orders() {
         <span className="crumb">Orders / All</span>
         <span className="spacer" />
         <input className="search" placeholder="Search SO or PO number…" value={query} onChange={(e) => setQuery(e.target.value)} />
+        <button className="btn btn-ghost btn-sm" onClick={state.reload} disabled={state.loading}>
+          {state.loading ? 'Refreshing…' : '↻ Refresh'}
+        </button>
         <NotificationBell />
       </div>
       <div className="content">
@@ -40,61 +48,57 @@ export default function Orders() {
           })}
         </div>
 
-        <Card>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>SAP SO No.</th>
-                  <th>Your PO</th>
-                  <th>Item summary</th>
-                  <th className="num">Value</th>
-                  <th>Delivery terms</th>
-                  <th className="th-exp">Your expected date</th>
-                  <th>Confirmed by SIL</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((o) => (
-                  <tr key={o.po}>
-                    <td>{o.so ? <b>{o.so}</b> : <span className="muted">pending</span>}</td>
-                    <td>
-                      {o.po}{' '}
-                      <a href="#" title="PO copy">
-                        📎
-                      </a>
-                    </td>
-                    <td>
-                      {o.item} · {o.qty}
-                    </td>
-                    <td className="num">{rupees(o.value)}</td>
-                    <td>{o.terms}</td>
-                    <td>
-                      <DateChip kind="exp" value={o.expected} />
-                    </td>
-                    <td>
-                      <DateChip kind="conf" value={o.confirmed} />
-                    </td>
-                    <td>
-                      <Tag tone={statusTone[o.status]}>{o.status}</Tag>
-                    </td>
-                  </tr>
-                ))}
-                {rows.length === 0 && (
-                  <tr>
-                    <td colSpan={8} className="muted" style={{ textAlign: 'center' }}>
-                      No orders match.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </Card>
+        <Async state={state} label="Loading your orders from SAP…">
+          {() => (
+            <Card>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>SAP SO No.</th>
+                      <th>Your PO</th>
+                      <th>Item summary</th>
+                      <th className="num">Value</th>
+                      <th>Delivery terms</th>
+                      <th className="th-exp">Your expected date</th>
+                      <th>Confirmed by SIL</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((o) => (
+                      <tr key={o.key}>
+                        <td>{o.so ? <b>{o.so}</b> : <span className="muted">pending</span>}</td>
+                        <td>
+                          {o.po} {o.hasAttachment && <span title="PO copy attached in SAP">📎</span>}
+                        </td>
+                        <td>
+                          {o.item}
+                          {o.qty ? ` · ${o.qty}` : ''}
+                        </td>
+                        <td className="num">{rupees(o.value)}</td>
+                        <td>{o.terms}</td>
+                        <td>
+                          <DateChip kind="exp" value={o.expected} />
+                        </td>
+                        <td>
+                          <DateChip kind="conf" value={o.confirmed} />
+                        </td>
+                        <td>
+                          <Tag tone={statusTone[o.status]}>{o.status}</Tag>
+                        </td>
+                      </tr>
+                    ))}
+                    {rows.length === 0 && <EmptyRow cols={8}>{orders.length ? 'No orders match.' : 'No orders found in SAP yet.'}</EmptyRow>}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
+        </Async>
         <p className="footer-note">
-          Purple = your expected date · Green = date confirmed by Sufalam. You receive an email whenever a confirmed date
-          is set or revised.
+          Purple = your expected date · Green = date confirmed by Sufalam. Orders "awaiting approval" are drafts in SAP until
+          Sufalam converts them to a Sales Order.
         </p>
       </div>
     </>

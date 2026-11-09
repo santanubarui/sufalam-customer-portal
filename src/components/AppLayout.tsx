@@ -1,11 +1,12 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
-import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { Brandmark } from './ui'
-import { NotificationBell, ProfileMenu, usePortal } from './header'
-import { customer, pendingPIs, summary } from '../data/mock'
+import { Link, Navigate, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { Brandmark, ErrorState, Loading } from './ui'
+import { NotificationBell, ProfileMenu, useCustomer, usePortal, useSignOut } from './header'
 import { rupees } from '../utils/format'
 
-const nav: { group: string; links: { to: string; icon: string; label: string; pill?: number }[] }[] = [
+type NavLinkDef = { to: string; icon: string; label: string; pill?: 'pis' | 'inTransit' }
+
+const nav: { group: string; links: NavLinkDef[] }[] = [
   { group: 'Overview', links: [{ to: '/dashboard', icon: '▦', label: 'Dashboard' }] },
   {
     group: 'Orders',
@@ -14,14 +15,42 @@ const nav: { group: string; links: { to: string; icon: string; label: string; pi
       { to: '/orders', icon: '☰', label: 'My Orders' },
     ],
   },
-  { group: 'Payments', links: [{ to: '/payments', icon: '₹', label: 'PI & Payments', pill: pendingPIs.length }] },
-  { group: 'Deliveries', links: [{ to: '/in-transit', icon: '🚚', label: 'In-Transit', pill: 1 }] },
+  { group: 'Payments', links: [{ to: '/payments', icon: '₹', label: 'PI & Payments', pill: 'pis' }] },
+  { group: 'Deliveries', links: [{ to: '/in-transit', icon: '🚚', label: 'In-Transit', pill: 'inTransit' }] },
   { group: 'Accounts', links: [{ to: '/statements', icon: '≣', label: 'Statements' }] },
 ]
 
+/** Guards the signed-in area: redirects to /login and waits until the SAP customer record is loaded. */
 export default function AppLayout() {
-  const navigate = useNavigate()
-  const { signOut } = usePortal()
+  const { signedIn, customer, customerError, customerLoading, refreshCustomer, signOut } = usePortal()
+  const location = useLocation()
+
+  if (!signedIn) return <Navigate to="/login" replace state={{ from: location.pathname }} />
+  if (!customer) {
+    return (
+      <div className="boot">
+        {customerError && !customerLoading ? (
+          <div>
+            <ErrorState message={customerError} onRetry={refreshCustomer} />
+            <p className="footer-note">
+              <button className="linkbtn" onClick={() => void signOut()}>
+                Sign out and use a different account
+              </button>
+            </p>
+          </div>
+        ) : (
+          <Loading label="Loading your account from SAP…" />
+        )}
+      </div>
+    )
+  }
+  return <Shell />
+}
+
+function Shell() {
+  const customer = useCustomer()
+  const { counts } = usePortal()
+  const signOut = useSignOut()
   const { pathname } = useLocation()
   const [menuOpen, setMenuOpen] = useState(false)
 
@@ -46,7 +75,7 @@ export default function AppLayout() {
                 <NavLink key={l.to} to={l.to} end className={({ isActive }) => (isActive ? 'on' : '')}>
                   <span className="i">{l.icon}</span>
                   {l.label}
-                  {l.pill ? <span className="pill">{l.pill}</span> : null}
+                  {l.pill && counts[l.pill] ? <span className="pill">{counts[l.pill]}</span> : null}
                 </NavLink>
               ))}
             </div>
@@ -57,17 +86,11 @@ export default function AppLayout() {
           <div>
             <b>{customer.name}</b>
             <small>
-              {customer.code} · {customer.state}
+              {customer.code}
+              {customer.state ? ` · ${customer.state}` : ''}
             </small>
           </div>
-          <button
-            className="logout"
-            title="Sign out"
-            onClick={() => {
-              signOut()
-              navigate('/login')
-            }}
-          >
+          <button className="logout" title="Sign out" onClick={() => void signOut()}>
             ⎋
           </button>
         </div>
@@ -86,6 +109,7 @@ function greeting() {
 }
 
 function AppHeader({ onMenu }: { onMenu: () => void }) {
+  const customer = useCustomer()
   const today = new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric' })
 
   return (
@@ -104,7 +128,7 @@ function AppHeader({ onMenu }: { onMenu: () => void }) {
       <span className="spacer" />
       <Link to="/statements" className="credit-chip" title="Available credit">
         <small>Available credit</small>
-        <b>{rupees(summary.available)}</b>
+        <b>{rupees(customer.available)}</b>
       </Link>
       <Link to="/orders/new" className="btn btn-sm hdr-cta">
         ＋ Create PO

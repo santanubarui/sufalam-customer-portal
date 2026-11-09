@@ -1,6 +1,7 @@
 node_modules
 dist
-*.local
-.env
-.env.*
 *.tsbuildinfo
+
+# env: .env / .env.production / .env.example are committed (no secrets);
+# anything *.local holds credentials and stays on this machine.
+*.local

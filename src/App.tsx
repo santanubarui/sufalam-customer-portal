@@ -10,6 +10,7 @@ import Payments from './pages/Payments'
 import InTransit from './pages/InTransit'
 import Statements from './pages/Statements'
 import { PortalProvider, ProfileMenu, usePortal } from './components/header'
+import { ToastProvider } from './components/toast'
 
 const screens = [
   { to: '/dashboard', label: 'Dashboard' },
@@ -44,6 +45,7 @@ function ThemeBar() {
 
 export default function App() {
   return (
+    <ToastProvider>
     <PortalProvider>
       <ThemeBar />
       <Routes>
@@ -61,5 +63,6 @@ export default function App() {
       <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     </PortalProvider>
+    </ToastProvider>
   )
 }

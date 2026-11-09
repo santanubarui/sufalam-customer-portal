@@ -1,74 +1,127 @@
+import { useState } from 'react'
 import { Topbar } from '../components/AppLayout'
-import { Card, Tag } from '../components/ui'
-import { paymentHistory, pendingPIs } from '../data/mock'
-import { rupees } from '../utils/format'
+import { Async, Card, EmptyRow, Tag } from '../components/ui'
+import { useCustomer } from '../components/header'
+import { useToast } from '../components/toast'
+import { getPayments, getPendingProformas } from '../api/portal'
+import { useAsync } from '../hooks/useAsync'
+import { amount, longDate, rupees } from '../utils/format'
 
 export default function Payments() {
+  const customer = useCustomer()
+  const toast = useToast()
+  const [openPi, setOpenPi] = useState<number | null>(null)
+
+  const pis = useAsync((signal) => getPendingProformas(customer.code, signal), [customer.code])
+  const payments = useAsync((signal) => getPayments(customer.code, signal), [customer.code])
+
+  const payNow = (pi: string, amt: number) =>
+    toast.info(
+      'Online payment not enabled yet',
+      `Please pay ${rupees(amt)} against ${pi} by bank transfer quoting ${pi}. It will appear here once posted in SAP.`,
+    )
+
   return (
     <>
       <Topbar title="Proforma Invoices & Payments" crumb="Payments" />
       <div className="content">
-        <Card title="Pending payment" className="mb" actions={<Tag tone="p">{pendingPIs.length} PIs</Tag>}>
-          {pendingPIs.map((pi) => (
-            <div className="pi-card" key={pi.pi}>
-              <div className="pi-ic">🧾</div>
-              <div className="info">
-                <b>
-                  {pi.pi} · against {pi.so}
-                </b>
-                <small>{pi.details}</small>
-                {pi.cta && <small className="cta">{pi.cta}</small>}
-              </div>
-              <div className="pi-amt">{rupees(pi.amount)}</div>
-              <div className="pi-actions">
-                <button className="btn btn-ghost">View PI</button>
-                <button className="btn btn-grad">Pay now →</button>
-              </div>
-            </div>
-          ))}
+        <Card title="Pending payment" className="mb" actions={pis.data && <Tag tone="p">{pis.data.length} PIs</Tag>}>
+          <Async state={pis} label="Loading proforma invoices from SAP…">
+            {(list) =>
+              list.length === 0 ? (
+                <div className="bd muted">No proforma invoices are awaiting payment.</div>
+              ) : (
+                <>
+                  {list.map((pi) => (
+                    <div key={pi.docEntry}>
+                      <div className="pi-card">
+                        <div className="pi-ic">🧾</div>
+                        <div className="info">
+                          <b>
+                            {pi.pi} · against {pi.ref}
+                          </b>
+                          <small>{pi.details}</small>
+                          <small className="cta">Pay to release dispatch — delivery is posted once payment is received</small>
+                        </div>
+                        <div className="pi-amt">{rupees(pi.amount)}</div>
+                        <div className="pi-actions">
+                          <button className="btn btn-ghost" onClick={() => setOpenPi(openPi === pi.docEntry ? null : pi.docEntry)}>
+                            {openPi === pi.docEntry ? 'Hide PI' : 'View PI'}
+                          </button>
+                          <button className="btn btn-grad" onClick={() => payNow(pi.pi, pi.amount)}>
+                            Pay now →
+                          </button>
+                        </div>
+                      </div>
+                      {openPi === pi.docEntry && (
+                        <div className="table-wrap">
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>Item</th>
+                                <th className="num">Qty</th>
+                                <th className="num">Line total</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {pi.lines.map((l, i) => (
+                                <tr key={i}>
+                                  <td>{l.item}</td>
+                                  <td className="num">{l.qty}</td>
+                                  <td className="num">{amount(l.total)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </>
+              )
+            }
+          </Async>
         </Card>
 
-        <Card title="Payment history" actions={<a href="#">Download all receipts</a>}>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>PI / Ref</th>
-                  <th>Mode</th>
-                  <th>Gateway Txn ID</th>
-                  <th className="num">Amount</th>
-                  <th>SAP receipt</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {paymentHistory.map((p) => (
-                  <tr key={p.txn}>
-                    <td>{p.date}</td>
-                    <td>{p.ref}</td>
-                    <td>{p.mode}</td>
-                    <td>{p.txn}</td>
-                    <td className="num">{rupees(p.amount)}</td>
-                    <td>
-                      {p.receipt ? (
-                        <>
-                          <b>{p.receipt}</b> <a href="#">⬇</a>
-                        </>
-                      ) : (
-                        '—'
-                      )}
-                    </td>
-                    <td>{p.ok ? <Tag tone="g">Success</Tag> : <Tag tone="r">Failed</Tag>}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        <Card title="Payment history" actions={<button className="linkbtn" onClick={payments.reload}>↻ Refresh</button>}>
+          <Async state={payments} label="Loading payments from SAP…">
+            {(list) => (
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Reference</th>
+                      <th>Mode</th>
+                      <th>Transfer ref</th>
+                      <th className="num">Amount</th>
+                      <th>SAP receipt</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {list.slice(0, 25).map((p) => (
+                      <tr key={p.docEntry}>
+                        <td>{longDate(p.date)}</td>
+                        <td>{p.ref}</td>
+                        <td>{p.mode}</td>
+                        <td>{p.txnRef}</td>
+                        <td className="num">{rupees(p.amount)}</td>
+                        <td>
+                          <b>{p.receipt}</b>
+                        </td>
+                        <td>{p.cancelled ? <Tag tone="r">Cancelled</Tag> : <Tag tone="g">Posted</Tag>}</td>
+                      </tr>
+                    ))}
+                    {list.length === 0 && <EmptyRow cols={7}>No payments recorded in SAP yet.</EmptyRow>}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Async>
         </Card>
         <p className="footer-note">
-          Successful payments post automatically into SAP B1 and restore your available credit for the same value. A
-          payment receipt is emailed instantly.
+          Payments posted in SAP B1 reduce your outstanding and restore your available credit for the same value.
         </p>
       </div>
     </>
