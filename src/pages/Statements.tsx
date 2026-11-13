@@ -3,7 +3,8 @@ import { Topbar } from '../components/AppLayout'
 import { Async, Card, EmptyRow, Tag, Tile } from '../components/ui'
 import { useCustomer } from '../components/header'
 import { useToast } from '../components/toast'
-import { getLedger, getOpenInvoices, getPayments, todayIso, type LedgerRow, type OpenInvoice, type TagTone } from '../api/portal'
+import { todayIso, type LedgerRow, type OpenInvoice, type TagTone } from '../api/portal'
+import { getLedger, getOpenInvoices, getPayments } from '../api/client'
 import { useAsync } from '../hooks/useAsync'
 import { amount, rupees, shortDate } from '../utils/format'
 
@@ -47,12 +48,12 @@ export default function Statements() {
 
   const receivables = useAsync(
     async (signal) => {
-      const [invoices, payments] = await Promise.all([getOpenInvoices(customer.code, signal), getPayments(customer.code, signal)])
+      const [invoices, payments] = await Promise.all([getOpenInvoices(signal), getPayments(signal)])
       return { invoices, advances: payments.filter((p) => p.onAccount && !p.cancelled) }
     },
     [customer.code],
   )
-  const ledger = useAsync((signal) => getLedger(customer.code, customer.balance, range.from, range.to, signal), [customer.code, customer.balance, range])
+  const ledger = useAsync((signal) => getLedger(range.from, range.to, signal), [customer.code, customer.balance, range])
 
   const applyRange = () => {
     if (!from || !to) return toast.error('Choose both dates', 'Select a from and to date for the statement.')

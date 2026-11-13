@@ -1,49 +1,24 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { onSessionExpired, sapLogin, sapLogout } from '../api/sap'
+import type { Customer } from '../api/portal'
 import {
+  auth,
+  errorMessage,
   getCustomer,
   getDeliveries,
   getOpenInvoices,
   getPendingProformas,
-  type Customer,
-} from '../api/portal'
-import { errorMessage } from '../api/sap'
+  onSessionExpired,
+  type PortalUser,
+} from '../api/client'
 import { rupees } from '../utils/format'
 import { useToast } from './toast'
 
 /* ===== session + notification state shared by every header ===== */
 
-const SESSION_KEY = 'sufalam.session'
-
-interface StoredSession {
-  cardCode: string
-  userName: string
-  companyDB: string
-}
-
-const readSession = (): StoredSession | null => {
-  try {
-    const raw = sessionStorage.getItem(SESSION_KEY)
-    return raw ? (JSON.parse(raw) as StoredSession) : null
-  } catch {
-    return null
-  }
-}
-
-const writeSession = (s: StoredSession | null) => {
-  try {
-    s ? sessionStorage.setItem(SESSION_KEY, JSON.stringify(s)) : sessionStorage.removeItem(SESSION_KEY)
-  } catch {
-    /* storage blocked — state still works for this tab */
-  }
-}
-
 export interface SignInInput {
-  companyDB: string
-  userName: string
+  email: string
   password: string
-  cardCode: string
 }
 
 export interface Alert {
@@ -56,7 +31,9 @@ export interface Alert {
 
 interface PortalState {
   signedIn: boolean
-  session: StoredSession | null
+  /** true while the existing session cookie is being checked on page load */
+  checking: boolean
+  session: PortalUser | null
   customer: Customer | null
   customerLoading: boolean
   customerError: string | null
@@ -72,12 +49,8 @@ interface PortalState {
 
 const Portal = createContext<PortalState | null>(null)
 
-async function loadAlerts(cardCode: string) {
-  const [pis, deliveries, invoices] = await Promise.all([
-    getPendingProformas(cardCode),
-    getDeliveries(cardCode),
-    getOpenInvoices(cardCode),
-  ])
+async function loadAlerts() {
+  const [pis, deliveries, invoices] = await Promise.all([getPendingProformas(), getDeliveries(), getOpenInvoices()])
   const overdue = invoices.filter((i) => i.daysOverdue > 0)
   const alerts: Alert[] = []
   pis.forEach((p) =>
@@ -100,16 +73,16 @@ async function loadAlerts(cardCode: string) {
 
 export function PortalProvider({ children }: { children: ReactNode }) {
   const toast = useToast()
-  const [session, setSession] = useState<StoredSession | null>(readSession)
+  const [session, setSession] = useState<PortalUser | null>(null)
+  const [checking, setChecking] = useState(true)
   const [customer, setCustomer] = useState<Customer | null>(null)
-  const [customerLoading, setCustomerLoading] = useState(!!session)
+  const [customerLoading, setCustomerLoading] = useState(false)
   const [customerError, setCustomerError] = useState<string | null>(null)
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [counts, setCounts] = useState({ pis: 0, inTransit: 0, overdue: 0 })
   const [unread, setUnread] = useState(0)
 
   const clear = useCallback(() => {
-    writeSession(null)
     setSession(null)
     setCustomer(null)
     setCustomerError(null)
@@ -118,14 +91,25 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     setUnread(0)
   }, [])
 
-  // Any 401 from Service Layer ends the portal session.
+  // restore the session after a page reload (HttpOnly cookie held by the browser)
+  useEffect(() => {
+    const ctrl = new AbortController()
+    auth
+      .me(ctrl.signal)
+      .then((r) => setSession(r.user))
+      .catch(() => undefined)
+      .finally(() => !ctrl.signal.aborted && setChecking(false))
+    return () => ctrl.abort()
+  }, [])
+
+  // Any 401 from the portal API ends the session.
   const sessionRef = useRef(session)
   sessionRef.current = session
   useEffect(() => {
     onSessionExpired(() => {
       if (!sessionRef.current) return
       clear()
-      toast.error('Session expired', 'Your SAP session timed out. Please sign in again.')
+      toast.error('Session expired', 'You were signed out after a period of inactivity. Please sign in again.')
     })
     return () => onSessionExpired(null)
   }, [clear, toast])
@@ -134,13 +118,12 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     if (!session) return
     setCustomerLoading(true)
     setCustomerError(null)
-    getCustomer(session.cardCode)
+    getCustomer()
       .then(setCustomer)
       .catch((e) => setCustomerError(errorMessage(e)))
       .finally(() => setCustomerLoading(false))
   }, [session])
 
-  // restore customer after a page reload (SL cookie is still valid)
   useEffect(() => {
     if (session && !customer) refreshCustomer()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -148,7 +131,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
 
   const refreshAlerts = useCallback(() => {
     if (!session) return
-    loadAlerts(session.cardCode)
+    loadAlerts()
       .then((r) => {
         setAlerts(r.alerts)
         setCounts(r.counts)
@@ -164,25 +147,16 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   }, [customer, refreshAlerts])
 
   const signIn = useCallback(async (input: SignInInput) => {
-    await sapLogin({ CompanyDB: input.companyDB, UserName: input.userName, Password: input.password })
-    let c: Customer
-    try {
-      c = await getCustomer(input.cardCode.trim())
-    } catch (e) {
-      await sapLogout()
-      throw e
-    }
-    const s = { cardCode: c.code, userName: input.userName, companyDB: input.companyDB }
-    writeSession(s)
-    setCustomer(c)
+    const r = await auth.login(input.email.trim(), input.password)
+    setCustomer(r.customer)
     setCustomerError(null)
     setCustomerLoading(false)
-    setSession(s)
-    return c
+    setSession(r.user)
+    return r.customer
   }, [])
 
   const signOut = useCallback(async () => {
-    await sapLogout()
+    await auth.logout()
     clear()
   }, [clear])
 
@@ -190,6 +164,7 @@ export function PortalProvider({ children }: { children: ReactNode }) {
     <Portal.Provider
       value={{
         signedIn: !!session,
+        checking,
         session,
         customer,
         customerLoading,
@@ -249,7 +224,7 @@ export function useSignOut() {
   const navigate = useNavigate()
   return async () => {
     await signOut()
-    toast.success('Signed out', 'Your SAP session has been closed.')
+    toast.success('Signed out', 'You have been signed out of the portal.')
     navigate('/login')
   }
 }
@@ -293,7 +268,7 @@ export function ProfileMenu({ variant = 'light', showName = false }: { variant?:
                   <b>{name}</b>
                   <small>
                     {sub}
-                    {session ? ` · SAP user ${session.userName}` : ''}
+                    {session ? ` · ${session.email}` : ''}
                   </small>
                 </div>
               </div>

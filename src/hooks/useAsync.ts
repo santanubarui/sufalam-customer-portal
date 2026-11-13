@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type DependencyList } from 'react'
-import { errorMessage } from '../api/sap'
+import { errorMessage } from '../api/client'
 
 export interface AsyncState<T> {
   data: T | undefined

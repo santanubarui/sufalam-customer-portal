@@ -4,8 +4,8 @@ import { Topbar } from '../components/AppLayout'
 import { Async, Card } from '../components/ui'
 import { useCustomer } from '../components/header'
 import { useToast } from '../components/toast'
-import { createPurchaseOrderDraft, getSalesItems, todayIso, uploadAttachment, type SalesItem } from '../api/portal'
-import { errorMessage } from '../api/sap'
+import { todayIso, type SalesItem } from '../api/portal'
+import { errorMessage, getSalesItems, submitPurchaseOrder } from '../api/client'
 import { useAsync } from '../hooks/useAsync'
 import { amount, rupees } from '../utils/format'
 
@@ -45,7 +45,7 @@ const loadDraft = (cardCode: string): { header: Header; lines: Line[] } | null =
 
 export default function CreatePO() {
   const customer = useCustomer()
-  const items = useAsync((signal) => getSalesItems(customer.priceList, signal), [customer.priceList])
+  const items = useAsync((signal) => getSalesItems(signal), [customer.priceList])
 
   return (
     <>
@@ -129,33 +129,25 @@ function POForm({ items }: { items: SalesItem[] }) {
 
     setBusy(true)
     try {
-      let attachmentEntry: number | undefined
-      let attachWarning = ''
-      try {
-        attachmentEntry = await uploadAttachment([file!])
-      } catch (err) {
-        attachWarning = errorMessage(err)
-      }
-
-      const res = await createPurchaseOrderDraft({
-        cardCode: customer.code,
-        branch: customer.branch,
-        poNumber: header.poNumber.trim(),
-        poDate: header.poDate,
-        deliveryTerms: header.deliveryTerms,
-        freight: header.freight,
-        shipTo: header.shipTo,
-        remarks: header.remarks,
-        lines: lines.map((l) => ({ itemCode: l.code, quantity: l.qty, expectedDate: l.date })),
-        attachmentEntry,
-      })
+      const { docNum, attachWarning } = await submitPurchaseOrder(
+        {
+          poNumber: header.poNumber.trim(),
+          poDate: header.poDate,
+          deliveryTerms: header.deliveryTerms,
+          freight: header.freight,
+          shipTo: header.shipTo,
+          remarks: header.remarks,
+          lines: lines.map((l) => ({ itemCode: l.code, quantity: l.qty, expectedDate: l.date })),
+        },
+        file,
+      )
 
       try {
         localStorage.removeItem(`${DRAFT_KEY}.${customer.code}`)
       } catch {
         /* ignore */
       }
-      toast.success('PO submitted to Sufalam', `PO ${header.poNumber.trim()} saved in SAP as draft #${res.DocNum} — awaiting approval.`)
+      toast.success('PO submitted to Sufalam', `PO ${header.poNumber.trim()} saved in SAP as draft #${docNum} — awaiting approval.`)
       if (attachWarning) toast.error('PO copy was not attached', `The order was created, but the PDF upload failed: ${attachWarning}`)
       navigate('/orders')
     } catch (err) {

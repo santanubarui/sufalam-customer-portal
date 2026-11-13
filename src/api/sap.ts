@@ -1,9 +1,19 @@
 /*
  * Thin client for SAP Business One Service Layer (OData v4, /b1s/v2).
- * Session is cookie based (B1SESSION + ROUTEID), so every call uses credentials: 'include'.
+ *
+ * Runs on the portal backend (server/), which plugs in a transport that carries the service user's
+ * SL session (B1SESSION + ROUTEID cookies). The browser never talks to Service Layer directly; it only
+ * imports the error helpers from here.
  */
 
-export const SAP_BASE = (import.meta.env.VITE_SAP_BASE_URL || '/b1s/v2').replace(/\/+$/, '')
+let sapBase = '/b1s/v2'
+let transport: (url: string, init: RequestInit) => Promise<Response> = (url, init) => fetch(url, { credentials: 'include', ...init })
+
+/** Points the client at Service Layer and (optionally) replaces the HTTP transport. */
+export function configureSap(opts: { baseUrl?: string; fetch?: (url: string, init: RequestInit) => Promise<Response> }) {
+  if (opts.baseUrl) sapBase = opts.baseUrl.replace(/\/+$/, '')
+  if (opts.fetch) transport = opts.fetch
+}
 
 export class SapError extends Error {
   constructor(
@@ -69,15 +79,14 @@ export async function sapRequest<T = unknown>(path: string, opts: RequestOptions
 
   let res: Response
   try {
-    res = await fetch(`${SAP_BASE}/${path.replace(/^\/+/, '')}`, {
+    res = await transport(`${sapBase}/${path.replace(/^\/+/, '')}`, {
       method,
-      credentials: 'include',
       headers,
       body: body === undefined ? undefined : isForm ? (body as FormData) : JSON.stringify(body),
       signal,
     })
   } catch (e) {
-    if ((e as Error)?.name === 'AbortError') throw e
+    if ((e as Error)?.name === 'AbortError' || e instanceof SapError) throw e
     throw new SapError(0, 'Cannot reach SAP Service Layer. Check your internet connection and try again.')
   }
 

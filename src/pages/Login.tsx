@@ -3,18 +3,7 @@ import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { PublicLayout } from '../components/ui'
 import { usePortal } from '../components/header'
 import { useToast } from '../components/toast'
-import { errorMessage } from '../api/sap'
-
-const DEFAULT_DB = import.meta.env.VITE_SAP_COMPANY_DB || ''
-
-/** Dev-only prefill from .env.local — stripped from production builds by `import.meta.env.DEV`. */
-const DEV = import.meta.env.DEV
-  ? {
-      cardCode: import.meta.env.VITE_DEV_CARD_CODE ?? '',
-      userName: import.meta.env.VITE_DEV_SAP_USER ?? '',
-      password: import.meta.env.VITE_DEV_SAP_PASSWORD ?? '',
-    }
-  : { cardCode: '', userName: '', password: '' }
+import { errorMessage } from '../api/client'
 
 export default function Login() {
   const navigate = useNavigate()
@@ -22,10 +11,8 @@ export default function Login() {
   const { signIn, signedIn } = usePortal()
   const toast = useToast()
 
-  const [cardCode, setCardCode] = useState(DEV.cardCode)
-  const [userName, setUserName] = useState(DEV.userName)
-  const [password, setPassword] = useState(DEV.password)
-  const [companyDB, setCompanyDB] = useState(DEFAULT_DB)
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
@@ -37,8 +24,8 @@ export default function Login() {
     setError('')
     setBusy(true)
     try {
-      const customer = await signIn({ cardCode, userName: userName.trim(), password, companyDB: companyDB.trim() })
-      toast.success('Signed in successfully', `Welcome, ${customer.name}. Connected to SAP (${companyDB.trim()}).`)
+      const customer = await signIn({ email, password })
+      toast.success('Signed in successfully', `Welcome, ${customer.name}.`)
       navigate(from, { replace: true })
     } catch (err) {
       const msg = errorMessage(err)
@@ -53,27 +40,18 @@ export default function Login() {
     <PublicLayout>
       <form className="auth-card" onSubmit={onSubmit}>
         <h2>Welcome back</h2>
-        <p className="sub">Sign in with your SAP Business One credentials.</p>
+        <p className="sub">Sign in with your registered email ID (or SAP user ID) and password.</p>
         <div className="field">
-          <label htmlFor="cardCode">Customer code</label>
+          <label htmlFor="email">Email ID / User ID</label>
           <input
-            id="cardCode"
+            id="email"
+            type="text"
             required
             autoFocus
-            placeholder="e.g. 20108"
-            value={cardCode}
-            onChange={(e) => setCardCode(e.target.value)}
-          />
-        </div>
-        <div className="field">
-          <label htmlFor="userName">User name</label>
-          <input
-            id="userName"
-            required
             autoComplete="username"
-            placeholder="SAP user"
-            value={userName}
-            onChange={(e) => setUserName(e.target.value)}
+            placeholder="accounts@yourcompany.com or manager"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
           />
         </div>
         <div className="field">
@@ -87,10 +65,6 @@ export default function Login() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
           />
-        </div>
-        <div className="field">
-          <label htmlFor="companyDB">Company database</label>
-          <input id="companyDB" required value={companyDB} onChange={(e) => setCompanyDB(e.target.value)} />
         </div>
         {error && (
           <p className="form-error" role="alert">
@@ -106,8 +80,8 @@ export default function Login() {
         </div>
         <div className="divider">first time login</div>
         <p className="auth-note">
-          Use the temporary password emailed to you after approval. Your session ends automatically after 30 minutes of
-          inactivity.
+          Already a Sufalam customer? Use <Link to="/forgot-password">Forgot password</Link> with the email ID registered with
+          Sufalam to set your password. Your session ends automatically after 30 minutes of inactivity.
         </p>
       </form>
     </PublicLayout>

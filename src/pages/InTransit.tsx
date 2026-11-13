@@ -3,8 +3,8 @@ import { Topbar } from '../components/AppLayout'
 import { Async, Card, EmptyRow, Tag } from '../components/ui'
 import { useCustomer, usePortal } from '../components/header'
 import { useToast } from '../components/toast'
-import { acknowledgeDelivery, getDeliveries, todayIso, uploadAttachment, type Delivery } from '../api/portal'
-import { errorMessage } from '../api/sap'
+import { todayIso, type Delivery } from '../api/portal'
+import { acknowledgeDelivery, errorMessage, getDeliveries } from '../api/client'
 import { useAsync } from '../hooks/useAsync'
 import { longDate, rupees } from '../utils/format'
 
@@ -13,7 +13,7 @@ const IN_TRANSIT_STAGE = 2
 
 export default function InTransit() {
   const customer = useCustomer()
-  const state = useAsync((signal) => getDeliveries(customer.code, signal), [customer.code])
+  const state = useAsync((signal) => getDeliveries(signal), [customer.code])
 
   return (
     <>
@@ -167,16 +167,7 @@ function AckForm({ delivery, onDone }: { delivery: Delivery; onDone: () => void 
 
     setBusy(true)
     try {
-      let attachmentEntry: number | undefined
-      let warn = ''
-      if (photo) {
-        try {
-          attachmentEntry = await uploadAttachment([photo])
-        } catch (err) {
-          warn = errorMessage(err)
-        }
-      }
-      await acknowledgeDelivery(delivery, { receivedOn, condition, remarks, attachmentEntry })
+      const { attachWarning: warn } = await acknowledgeDelivery(delivery.docEntry, { receivedOn, condition, remarks }, photo)
       toast.success('Receipt acknowledged', `${delivery.dn} has been marked as received in SAP.`)
       if (warn) toast.error('Photo was not attached', warn)
       refreshAlerts()

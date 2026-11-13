@@ -2,7 +2,8 @@ import { Link } from 'react-router-dom'
 import { Topbar } from '../components/AppLayout'
 import { Async, Card, DateChip, EmptyRow, Tag, Tile } from '../components/ui'
 import { useCustomer, usePortal } from '../components/header'
-import { getOpenInvoices, getOrders, getPayments, statusTone } from '../api/portal'
+import { statusTone } from '../api/portal'
+import { getOpenInvoices, getOrders, getPayments } from '../api/client'
 import { useAsync } from '../hooks/useAsync'
 import { dayMonth, longDate, rupees } from '../utils/format'
 
@@ -13,9 +14,9 @@ export default function Dashboard() {
   const state = useAsync(
     async (signal) => {
       const [orders, invoices, payments] = await Promise.all([
-        getOrders(customer.code, signal),
-        getOpenInvoices(customer.code, signal),
-        getPayments(customer.code, signal),
+        getOrders(signal),
+        getOpenInvoices(signal),
+        getPayments(signal),
       ])
       return { orders, invoices, payments }
     },

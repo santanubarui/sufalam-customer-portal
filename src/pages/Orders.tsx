@@ -2,7 +2,8 @@ import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { NotificationBell, useCustomer } from '../components/header'
 import { Async, Card, DateChip, EmptyRow, Tag } from '../components/ui'
-import { getOrders, statusTone, type OrderStatus } from '../api/portal'
+import { statusTone, type OrderStatus } from '../api/portal'
+import { getOrders } from '../api/client'
 import { useAsync } from '../hooks/useAsync'
 import { rupees } from '../utils/format'
 
@@ -14,7 +15,7 @@ export default function Orders() {
   const [params] = useSearchParams()
   const [query, setQuery] = useState(params.get('q') ?? '')
 
-  const state = useAsync((signal) => getOrders(customer.code, signal), [customer.code])
+  const state = useAsync((signal) => getOrders(signal), [customer.code])
   const orders = state.data ?? []
 
   const q = query.trim().toLowerCase()

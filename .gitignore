@@ -5,3 +5,7 @@ dist
 # env: .env / .env.production / .env.example are committed (no secrets);
 # anything *.local holds credentials and stays on this machine.
 *.local
+
+# portal backend: build output and account data (users.json — back this up, never commit)
+dist-server
+server-data

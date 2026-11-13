@@ -274,14 +274,14 @@ export async function getSalesItems(priceList: number, signal?: AbortSignal): Pr
   const items = await sapList<SapItem>(
     odata('Items', {
       select: 'ItemCode,ItemName,SalesUnit,ItemPrices',
-      filter: "SalesItem eq 'tYES' and Valid eq 'tYES' and Frozen eq 'tNO'",
+      filter: "SalesItem eq 'tYES' and Valid eq 'tYES' and Frozen eq 'tNO' and ItemType ne 'itFixedAssets'",
       orderby: 'ItemName',
     }),
     { pageSize: 100, maxPages: 5, signal },
   )
   return items.map((i) => ({
     code: i.ItemCode,
-    name: i.ItemName,
+    name: i.ItemName?.trim() || i.ItemCode, // a few SAP items have no name — show the code instead
     unit: i.SalesUnit ?? '',
     rate: n(i.ItemPrices?.find((p) => p.PriceList === priceList)?.Price),
   }))
@@ -526,8 +526,24 @@ function mapDelivery(d: SapDocument): Delivery {
   }
 }
 
+const DELIVERY_SELECT = 'DocEntry,DocNum,NumAtCard,DocDate,DocTotal,Comments,AttachmentEntry,DocumentLines'
+
+/** One delivery, only if it belongs to `cardCode` (otherwise reported as not found). */
+export async function getDelivery(cardCode: string, docEntry: number): Promise<Delivery> {
+  const notFound = () => new SapError(404, `Delivery ${docEntry} was not found for your account.`)
+  let d: SapDocument & { CardCode: string; Cancelled?: 'tYES' | 'tNO' }
+  try {
+    d = await sapRequest(`DeliveryNotes(${docEntry})?$select=CardCode,Cancelled,DocumentStatus,${DELIVERY_SELECT}`)
+  } catch (e) {
+    if (e instanceof SapError && e.status === 404) throw notFound()
+    throw e
+  }
+  if (d.CardCode !== cardCode || d.Cancelled === 'tYES') throw notFound()
+  return mapDelivery(d)
+}
+
 export async function getDeliveries(cardCode: string, signal?: AbortSignal) {
-  const select = 'DocEntry,DocNum,NumAtCard,DocDate,DocTotal,Comments,AttachmentEntry,DocumentLines'
+  const select = DELIVERY_SELECT
   const [open, acked] = await Promise.all([
     sapList<SapDocument>(
       odata('DeliveryNotes', {

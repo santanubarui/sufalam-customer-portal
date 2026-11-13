@@ -22,9 +22,16 @@ const nav: { group: string; links: NavLinkDef[] }[] = [
 
 /** Guards the signed-in area: redirects to /login and waits until the SAP customer record is loaded. */
 export default function AppLayout() {
-  const { signedIn, customer, customerError, customerLoading, refreshCustomer, signOut } = usePortal()
+  const { signedIn, checking, customer, customerError, customerLoading, refreshCustomer, signOut } = usePortal()
   const location = useLocation()
 
+  if (checking) {
+    return (
+      <div className="boot">
+        <Loading label="Checking your session…" />
+      </div>
+    )
+  }
   if (!signedIn) return <Navigate to="/login" replace state={{ from: location.pathname }} />
   if (!customer) {
     return (

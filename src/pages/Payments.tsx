@@ -3,7 +3,7 @@ import { Topbar } from '../components/AppLayout'
 import { Async, Card, EmptyRow, Tag } from '../components/ui'
 import { useCustomer } from '../components/header'
 import { useToast } from '../components/toast'
-import { getPayments, getPendingProformas } from '../api/portal'
+import { getPayments, getPendingProformas } from '../api/client'
 import { useAsync } from '../hooks/useAsync'
 import { amount, longDate, rupees } from '../utils/format'
 
@@ -12,8 +12,8 @@ export default function Payments() {
   const toast = useToast()
   const [openPi, setOpenPi] = useState<number | null>(null)
 
-  const pis = useAsync((signal) => getPendingProformas(customer.code, signal), [customer.code])
-  const payments = useAsync((signal) => getPayments(customer.code, signal), [customer.code])
+  const pis = useAsync((signal) => getPendingProformas(signal), [customer.code])
+  const payments = useAsync((signal) => getPayments(signal), [customer.code])
 
   const payNow = (pi: string, amt: number) =>
     toast.info(
