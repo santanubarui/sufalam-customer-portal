@@ -182,8 +182,18 @@ async function main() {
   await t('Create PO', 'Sellable items with the customer price list', 'GET /api/items', async () => {
     items = expect(await call<portal.SalesItem[]>('GET', '/api/items'), 200)
     assert(items.length > 0, 'no items')
-    return `${items.length} items, ${items.filter((i) => i.rate > 0).length} with a price`
+    return `${items.length} items, ${items.filter((i) => i.rate != null).length} with a price`
   })
+  // read-only: the backend rejects the PO on the price check, before any attachment or draft is written to SAP
+  const unpricedItem = items.find((i) => i.rate == null)
+  if (unpricedItem) {
+    await t('Create PO', 'PO with an unpriced item is rejected before SAP', 'POST /api/orders', async () => {
+      const r = await call('POST', '/api/orders', formOf({ po: { poNumber: `API-TEST-NOPRICE-${Date.now()}`, poDate: SERIES_DATE, deliveryTerms: 'FOR Destination', freight: "To Sufalam's account", shipTo: customer.shipTo[0]?.code ?? '', remarks: '', lines: [{ itemCode: unpricedItem.code, quantity: 1, expectedDate: SERIES_DATE }] } }, {}))
+      expect(r, 400)
+      assert(/Price is not available/.test(r.body?.error?.message ?? ''), `unexpected: ${errText(r)}`)
+      return errText(r)
+    })
+  } else skip('Create PO', 'PO with an unpriced item is rejected before SAP', 'every item has a price')
   await t('Payments', 'Pending proforma invoices', 'GET /api/proformas', async () => `${expect(await call<unknown[]>('GET', '/api/proformas'), 200).length} open PIs`)
   await t('Payments', 'Payment history', 'GET /api/payments', async () => {
     const p = expect(await call<portal.Payment[]>('GET', '/api/payments'), 200)
@@ -220,7 +230,7 @@ async function main() {
   if (!WRITE) {
     ;['Create PO draft', 'Acknowledge delivery', 'New customer registration'].forEach((x) => skip('Write', x, 'run with --write'))
   } else {
-    const item = items.find((i) => i.rate > 0) ?? items[0]
+    const item = items.find((i) => i.rate != null) ?? items[0]
     const po = (poDate: string, extra: Record<string, unknown> = {}) => ({
       poNumber: `API-TEST-${Date.now()}`,
       poDate,

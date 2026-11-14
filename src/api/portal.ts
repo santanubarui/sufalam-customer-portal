@@ -260,8 +260,13 @@ export interface SalesItem {
   code: string
   name: string
   unit: string
-  rate: number
+  /** Unit price from the customer's SAP price list; null when SAP has no valid (positive) price for it. */
+  rate: number | null
 }
+
+/** Message shown (and returned by the backend) when an item has no usable price in the customer's price list. */
+export const PRICE_UNAVAILABLE =
+  'Price is not available for this item in your assigned SAP Price List. Please contact the administrator before submitting the purchase order.'
 
 interface SapItem {
   ItemCode: string
@@ -279,12 +284,16 @@ export async function getSalesItems(priceList: number, signal?: AbortSignal): Pr
     }),
     { pageSize: 100, maxPages: 5, signal },
   )
-  return items.map((i) => ({
-    code: i.ItemCode,
-    name: i.ItemName?.trim() || i.ItemCode, // a few SAP items have no name — show the code instead
-    unit: i.SalesUnit ?? '',
-    rate: n(i.ItemPrices?.find((p) => p.PriceList === priceList)?.Price),
-  }))
+  return items.map((i) => {
+    // SAP keeps a row for every price list even when no price is maintained (Price 0) — that is "no price", not ₹0
+    const price = i.ItemPrices?.find((p) => p.PriceList === priceList)?.Price
+    return {
+      code: i.ItemCode,
+      name: i.ItemName?.trim() || i.ItemCode, // a few SAP items have no name — show the code instead
+      unit: i.SalesUnit ?? '',
+      rate: typeof price === 'number' && Number.isFinite(price) && price > 0 ? price : null,
+    }
+  })
 }
 
 /** Uploads files to SAP attachments (Attachments2) and returns the AbsoluteEntry. */

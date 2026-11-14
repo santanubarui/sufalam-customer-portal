@@ -346,6 +346,15 @@ export function createApp(cfg: ServerConfig) {
       return { itemCode, quantity, expectedDate }
     })
 
+    // every line must be a sellable item with a valid price in the customer's SAP price list — checked before
+    // anything (attachment or draft) is written to SAP
+    const sellable = new Map((await portal.getSalesItems(customer.priceList)).map((i) => [i.code, i]))
+    cleanLines.forEach((l, i) => {
+      const it = sellable.get(l.itemCode)
+      if (!it) throw bad(`Line ${i + 1}: item ${l.itemCode} no longer exists in SAP or is not sellable. Please refresh the page and try again.`)
+      if (it.rate == null) throw bad(`Line ${i + 1} (${it.name}): ${portal.PRICE_UNAVAILABLE}`)
+    })
+
     // PO copy → SAP attachment; the order is still created if only the upload fails
     let attachmentEntry: number | undefined
     let attachWarning = ''

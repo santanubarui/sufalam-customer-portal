@@ -4,7 +4,7 @@ import { Topbar } from '../components/AppLayout'
 import { Async, Card } from '../components/ui'
 import { useCustomer } from '../components/header'
 import { useToast } from '../components/toast'
-import { todayIso, type SalesItem } from '../api/portal'
+import { PRICE_UNAVAILABLE, todayIso, type SalesItem } from '../api/portal'
 import { errorMessage, getSalesItems, submitPurchaseOrder } from '../api/client'
 import { useAsync } from '../hooks/useAsync'
 import { amount, rupees } from '../utils/format'
@@ -92,7 +92,16 @@ function POForm({ items }: { items: SalesItem[] }) {
   const update = (id: number, patch: Partial<Line>) => setLines((ls) => ls.map((l) => (l.id === id ? { ...l, ...patch } : l)))
   const setH = (patch: Partial<Header>) => setHeader((h) => ({ ...h, ...patch }))
 
-  const subTotal = lines.reduce((s, l) => s + l.qty * item(l.code).rate, 0)
+  const validQty = (q: number) => Number.isFinite(q) && q > 0
+  /** Quantity × SAP rate, or null when the line can't be priced (no SAP price or invalid quantity). */
+  const lineAmount = (l: Line) => {
+    const rate = byCode.get(l.code)?.rate
+    const amt = rate != null && validQty(l.qty) ? l.qty * rate : NaN
+    return Number.isFinite(amt) && amt > 0 ? amt : null
+  }
+  const unpriced = lines.flatMap((l, i) => (byCode.get(l.code)?.rate == null ? [i + 1] : []))
+  const allPriced = lines.every((l) => lineAmount(l) != null)
+  const subTotal = lines.reduce((s, l) => s + (lineAmount(l) ?? 0), 0)
   const gst = Math.round(subTotal * GST_RATE)
 
   const validate = () => {
@@ -101,8 +110,13 @@ function POForm({ items }: { items: SalesItem[] }) {
     if (!file) return 'Attach a PDF copy of your PO.'
     if (file.size > MAX_PDF_MB * 1048576) return `PO copy must be ${MAX_PDF_MB} MB or smaller.`
     if (customer.shipTo.length && !header.shipTo) return 'Choose a ship-to address.'
+    if (!lines.length) return 'Add at least one PO line.'
     for (const [i, l] of lines.entries()) {
-      if (!(l.qty > 0)) return `Line ${i + 1}: quantity must be greater than zero.`
+      const it = byCode.get(l.code)
+      if (!it) return `Line ${i + 1}: choose an item.`
+      if (!validQty(l.qty)) return `Line ${i + 1}: quantity must be greater than zero.`
+      if (it.rate == null) return `Line ${i + 1} (${it.name}): ${PRICE_UNAVAILABLE}`
+      if (lineAmount(l) == null) return `Line ${i + 1} (${it.name}): the amount could not be calculated. Check the quantity.`
       if (!l.date) return `Line ${i + 1}: choose an expected delivery date.`
       if (l.date < header.poDate) return `Line ${i + 1}: expected delivery can't be before the PO date.`
     }
@@ -251,9 +265,17 @@ function POForm({ items }: { items: SalesItem[] }) {
                         onChange={(e) => update(l.id, { qty: Number(e.target.value) })}
                       />
                     </td>
-                    <td className="num">{it.rate ? amount(it.rate) : <span className="muted">on request</span>}</td>
                     <td className="num">
-                      <b>{amount(l.qty * it.rate)}</b>
+                      {it.rate != null ? (
+                        amount(it.rate)
+                      ) : (
+                        <span className="tag a" title={PRICE_UNAVAILABLE}>
+                          Price unavailable
+                        </span>
+                      )}
+                    </td>
+                    <td className="num">
+                      <b>{it.rate != null ? amount(lineAmount(l) ?? 0) : '—'}</b>
                     </td>
                     <td>
                       <input
@@ -289,18 +311,24 @@ function POForm({ items }: { items: SalesItem[] }) {
           >
             ＋ Add line
           </button>
+          {unpriced.length > 0 && (
+            <p className="form-error" role="status" style={{ marginTop: '1rem' }}>
+              {unpriced.length === 1 ? `Line ${unpriced[0]}: ` : `Lines ${unpriced.join(', ')}: `}
+              {PRICE_UNAVAILABLE} The price needs to be configured or verified in SAP price list #{customer.priceList}.
+            </p>
+          )}
           <div className="totals">
             <div>
               <span>Sub-total</span>
-              <b>{rupees(subTotal)}</b>
+              <b>{allPriced ? rupees(subTotal) : '—'}</b>
             </div>
             <div>
               <span>GST @ {GST_RATE * 100}% (est.)</span>
-              <b>{rupees(gst)}</b>
+              <b>{allPriced ? rupees(gst) : '—'}</b>
             </div>
             <div className="grand">
               <span>PO value</span>
-              <span>{rupees(subTotal + gst)}</span>
+              <span>{allPriced ? rupees(subTotal + gst) : '—'}</span>
             </div>
           </div>
           {error && (
