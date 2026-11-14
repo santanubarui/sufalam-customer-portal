@@ -2,10 +2,10 @@ import { Link } from 'react-router-dom'
 import { Topbar } from '../components/AppLayout'
 import { Async, Card, DateChip, EmptyRow, Tag, Tile } from '../components/ui'
 import { useCustomer, usePortal } from '../components/header'
-import { statusTone } from '../api/portal'
+import { statusTone, todayIso } from '../api/portal'
 import { getOpenInvoices, getOrders, getPayments } from '../api/client'
 import { useAsync } from '../hooks/useAsync'
-import { dayMonth, longDate, rupees } from '../utils/format'
+import { fmtDate, rupees } from '../utils/format'
 
 export default function Dashboard() {
   const customer = useCustomer()
@@ -38,7 +38,7 @@ export default function Dashboard() {
             return (
               <>
                 <div className="tiles">
-                  <Tile label="Total outstanding" value={rupees(customer.balance)} detail={`as on ${longDate(new Date().toISOString())}`} />
+                  <Tile label="Total outstanding" value={rupees(customer.balance)} detail={`as on ${fmtDate(todayIso())}`} />
                   <Tile
                     tone="r"
                     label="Overdue"
@@ -80,8 +80,8 @@ export default function Dashboard() {
                               <td className="num">{rupees(o.value)}</td>
                               <td>
                                 <div className="date-pair">
-                                  <DateChip kind="exp" value={o.expected} format={dayMonth} />
-                                  <DateChip kind="conf" value={o.confirmed} format={dayMonth} />
+                                  <DateChip kind="exp" value={o.expected} />
+                                  <DateChip kind="conf" value={o.confirmed} />
                                 </div>
                               </td>
                               <td>

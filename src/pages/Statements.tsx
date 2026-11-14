@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { Topbar } from '../components/AppLayout'
 import { Async, Card, EmptyRow, Tag, Tile } from '../components/ui'
+import { DateInput } from '../components/DateInput'
 import { useCustomer } from '../components/header'
 import { useToast } from '../components/toast'
-import { todayIso, type LedgerRow, type OpenInvoice, type TagTone } from '../api/portal'
+import { dmy, todayIso, type LedgerRow, type OpenInvoice, type TagTone } from '../api/portal'
 import { getLedger, getOpenInvoices, getPayments } from '../api/client'
 import { useAsync } from '../hooks/useAsync'
-import { amount, rupees, shortDate } from '../utils/format'
+import { amount, rupees, fmtDate } from '../utils/format'
 
 const drCr = (n: number) => `${amount(Math.abs(n))} ${n >= 0 ? 'Dr' : 'Cr'}`
 
@@ -66,12 +67,12 @@ export default function Statements() {
     if (!l) return toast.error('Nothing to export', 'The ledger has not loaded yet.')
     const rows: (string | number)[][] = [
       ['Account statement', customer.name, customer.code],
-      ['Period', range.from, range.to],
+      ['Period', dmy(range.from), dmy(range.to)],
       [],
       ['Date', 'Document', 'Particulars', 'Debit', 'Credit', 'Balance'],
-      [range.from, '', 'Opening balance', '', '', drCr(l.opening)],
-      ...l.rows.map((r: LedgerRow) => [r.date, r.doc, r.particulars, r.debit || '', r.credit || '', drCr(r.balance)]),
-      [range.to, '', 'Closing balance', '', '', drCr(l.closing)],
+      [dmy(range.from), '', 'Opening balance', '', '', drCr(l.opening)],
+      ...l.rows.map((r: LedgerRow) => [dmy(r.date), r.doc, r.particulars, r.debit || '', r.credit || '', drCr(r.balance)]),
+      [dmy(range.to), '', 'Closing balance', '', '', drCr(l.closing)],
     ]
     downloadCsv(`statement_${customer.code}_${range.from}_${range.to}.csv`, rows)
     toast.success('Statement exported', 'The CSV file opens in Excel.')
@@ -153,8 +154,8 @@ export default function Statements() {
                                 <td>
                                   <b>{i.invoice}</b>
                                 </td>
-                                <td>{shortDate(i.date)}</td>
-                                <td>{shortDate(i.due)}</td>
+                                <td>{fmtDate(i.date)}</td>
+                                <td>{fmtDate(i.due)}</td>
                                 <td className="num">{amount(i.original)}</td>
                                 <td className="num">{amount(i.balance)}</td>
                                 <td>
@@ -187,7 +188,7 @@ export default function Statements() {
                               <br />
                               <small>On account · {a.mode}</small>
                             </td>
-                            <td>{shortDate(a.date)}</td>
+                            <td>{fmtDate(a.date)}</td>
                             <td className="num">{amount(a.amount)}</td>
                             <td>
                               <Tag tone="p">On account</Tag>
@@ -224,11 +225,11 @@ export default function Statements() {
           title="Ledger statement"
           actions={
             <>
-              <input className="input-sm" type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} />
+              <DateInput className="input-sm" aria-label="From date" value={from} max={to} onChange={setFrom} />
               <span className="muted" style={{ fontSize: '.8rem', padding: '0 .4rem' }}>
                 to
               </span>
-              <input className="input-sm" type="date" value={to} max={todayIso()} onChange={(e) => setTo(e.target.value)} />
+              <DateInput className="input-sm" aria-label="To date" value={to} max={todayIso()} onChange={setTo} />
               <button className="btn btn-primary btn-sm" style={{ marginLeft: '.6rem' }} onClick={applyRange} disabled={ledger.loading}>
                 {ledger.loading ? 'Loading…' : 'Apply'}
               </button>
@@ -251,7 +252,7 @@ export default function Statements() {
                   </thead>
                   <tbody>
                     <tr>
-                      <td>{shortDate(range.from)}</td>
+                      <td>{fmtDate(range.from)}</td>
                       <td>—</td>
                       <td>
                         <b>Opening balance</b>
@@ -264,7 +265,7 @@ export default function Statements() {
                     </tr>
                     {l.rows.map((r) => (
                       <tr key={r.doc}>
-                        <td>{shortDate(r.date)}</td>
+                        <td>{fmtDate(r.date)}</td>
                         <td>{r.doc}</td>
                         <td>{r.particulars}</td>
                         <td className="num">{r.debit ? amount(r.debit) : ''}</td>
@@ -274,7 +275,7 @@ export default function Statements() {
                     ))}
                     {l.rows.length === 0 && <EmptyRow cols={6}>No transactions in this period.</EmptyRow>}
                     <tr>
-                      <td>{shortDate(range.to)}</td>
+                      <td>{fmtDate(range.to)}</td>
                       <td>—</td>
                       <td>
                         <b>Closing balance</b>

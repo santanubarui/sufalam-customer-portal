@@ -54,10 +54,14 @@ interface Route {
   handler: Handler
 }
 
+/** API dates arrive as dd-mm-yyyy (yyyy-mm-dd is still accepted); returns ISO yyyy-mm-dd for SAP. */
 const isoDate = (v: unknown, label: string) => {
-  const s = String(v ?? '')
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || Number.isNaN(Date.parse(s))) throw bad(`${label} must be a date (yyyy-mm-dd).`)
-  return s
+  const s = String(v ?? '').trim()
+  const dmy = /^(\d{2})-(\d{2})-(\d{4})$/.exec(s)
+  const iso = dmy ? `${dmy[3]}-${dmy[2]}-${dmy[1]}` : /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : ''
+  const d = iso ? new Date(`${iso}T00:00:00Z`) : null
+  if (!d || Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== iso) throw bad(`${label} must be a date (dd-mm-yyyy).`)
+  return iso
 }
 const text = (v: unknown, max: number) => String(v ?? '').trim().slice(0, max)
 const safeName = (s: string) => s.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'file'
@@ -343,16 +347,20 @@ export function createApp(cfg: ServerConfig) {
       if (expectedDate < poDate) throw bad(`Line ${i + 1}: expected delivery can't be before the PO date.`)
       const itemCode = text(l?.itemCode, 50)
       if (!itemCode) throw bad(`Line ${i + 1}: choose an item.`)
-      return { itemCode, quantity, expectedDate }
+      const rate = l?.unitPrice == null ? null : Number(l.unitPrice)
+      return { itemCode, quantity, expectedDate, rate }
     })
 
-    // every line must be a sellable item with a valid price in the customer's SAP price list — checked before
-    // anything (attachment or draft) is written to SAP
+    // every line must be a sellable item. Customer-wise price lists aren't maintained, so the customer may enter the rate
+    // on any line; without one the line falls back to the SAP price list. Checked before anything is written to SAP.
     const sellable = new Map((await portal.getSalesItems(customer.priceList)).map((i) => [i.code, i]))
-    cleanLines.forEach((l, i) => {
+    const pricedLines = cleanLines.map(({ rate, ...l }, i) => {
       const it = sellable.get(l.itemCode)
       if (!it) throw bad(`Line ${i + 1}: item ${l.itemCode} no longer exists in SAP or is not sellable. Please refresh the page and try again.`)
-      if (it.rate == null) throw bad(`Line ${i + 1} (${it.name}): ${portal.PRICE_UNAVAILABLE}`)
+      if (rate == null && it.rate != null) return l // no manual rate: SAP applies its price-list rate
+      if (rate == null) throw bad(`Line ${i + 1} (${it.name}): ${portal.PRICE_UNAVAILABLE}`)
+      if (!(Number.isFinite(rate) && rate > 0 && rate < 1e9)) throw bad(`Line ${i + 1} (${it.name}): the rate must be greater than zero.`)
+      return { ...l, unitPrice: Math.round(rate * 100) / 100 }
     })
 
     // PO copy → SAP attachment; the order is still created if only the upload fails
@@ -377,7 +385,7 @@ export function createApp(cfg: ServerConfig) {
       freight: text(po.freight, 50),
       shipTo,
       remarks: text(po.remarks, 200),
-      lines: cleanLines,
+      lines: pricedLines,
       attachmentEntry,
     })
     ctx.res.statusCode = 201
@@ -392,7 +400,7 @@ export function createApp(cfg: ServerConfig) {
     const input = formJson<{ receivedOn?: string; condition?: string; remarks?: string }>(form, 'ack')
 
     const d = await portal.getDelivery(cardCode, docEntry)
-    if (d.ack) throw new HttpError(409, `${d.dn} was already acknowledged on ${d.ack.date}.`)
+    if (d.ack) throw new HttpError(409, `${d.dn} was already acknowledged on ${portal.dmy(d.ack.date) || d.ack.date}.`)
     const receivedOn = isoDate(input.receivedOn, 'Received date')
     const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10) // server may run in UTC
     if (receivedOn < d.date) throw bad("Received date can't be before the dispatch date.")

@@ -1,12 +1,13 @@
 import { Fragment, useEffect, useState, type FormEvent } from 'react'
 import { Topbar } from '../components/AppLayout'
 import { Async, Card, EmptyRow, Tag } from '../components/ui'
+import { DateInput } from '../components/DateInput'
 import { useCustomer, usePortal } from '../components/header'
 import { useToast } from '../components/toast'
 import { todayIso, type Delivery } from '../api/portal'
 import { acknowledgeDelivery, errorMessage, getDeliveries } from '../api/client'
 import { useAsync } from '../hooks/useAsync'
-import { longDate, rupees } from '../utils/format'
+import { fmtDate, rupees } from '../utils/format'
 
 const stages = ['Order confirmed', 'Dispatched', 'In transit', 'Acknowledged']
 const IN_TRANSIT_STAGE = 2
@@ -56,7 +57,7 @@ export default function InTransit() {
                               {a.item} · {a.qty}
                             </td>
                             <td className="num">{rupees(a.value)}</td>
-                            <td>{longDate(a.ack?.date)}</td>
+                            <td>{fmtDate(a.ack?.date)}</td>
                             <td>
                               <Tag tone={ok ? 'g' : 'a'}>{ok ? 'Acknowledged' : 'Ack. with remarks'}</Tag>
                             </td>
@@ -106,7 +107,7 @@ function InTransitList({ list, onDone }: { list: Delivery[]; onDone: () => void 
               <b style={{ fontSize: '1rem' }}>Delivery {d.dn}</b>
               {d.ref ? ` · ${d.ref}` : ''} · <Tag tone="p">In-Transit</Tag>
               <div className="muted" style={{ fontSize: '.78rem', marginTop: '.3rem' }}>
-                {d.item} · {d.qty} · {rupees(d.value)} · Dispatched {longDate(d.date)}
+                {d.item} · {d.qty} · {rupees(d.value)} · Dispatched {fmtDate(d.date)}
               </div>
             </div>
             <div className="pi-actions">
@@ -187,7 +188,7 @@ function AckForm({ delivery, onDone }: { delivery: Delivery; onDone: () => void 
         <div className="grid3">
           <div className="field">
             <label>Received date *</label>
-            <input type="date" max={todayIso()} value={receivedOn} onChange={(e) => setReceivedOn(e.target.value)} />
+            <DateInput aria-label="Received date" max={todayIso()} value={receivedOn} onChange={setReceivedOn} />
           </div>
           <div className="field">
             <label>Condition</label>

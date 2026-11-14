@@ -18,6 +18,11 @@ export type TagTone = 'g' | 'p' | 'a' | 'r' | 'n'
 const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
 /** "2025-11-18T00:00:00Z" -> "2025-11-18" */
 export const isoDay = (d: string | null | undefined) => (d ? d.slice(0, 10) : '')
+/** "2025-11-18" (or "2025-11-18T00:00:00Z") -> "18-11-2025", the portal's display format; '' when there's no date. */
+export const dmy = (d: string | null | undefined) => {
+  const m = d ? /^(\d{4})-(\d{2})-(\d{2})/.exec(d) : null
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : ''
+}
 export const todayIso = () => {
   const t = new Date()
   return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`
@@ -264,9 +269,11 @@ export interface SalesItem {
   rate: number | null
 }
 
-/** Message shown (and returned by the backend) when an item has no usable price in the customer's price list. */
-export const PRICE_UNAVAILABLE =
-  'Price is not available for this item in your assigned SAP Price List. Please contact the administrator before submitting the purchase order.'
+/** Shown when an item has no usable price in the customer's price list and no manual rate was entered. */
+export const PRICE_UNAVAILABLE = 'No price is maintained for this item in your SAP price list. Enter the agreed rate manually.'
+
+/** Line remark the SAP approver sees when the rate was typed in by the customer instead of coming from the price list. */
+export const MANUAL_RATE_NOTE = 'Manual rate entered by customer'
 
 interface SapItem {
   ItemCode: string
@@ -314,9 +321,89 @@ export interface NewPurchaseOrder {
   freight: string
   shipTo: string
   remarks: string
-  lines: { itemCode: string; quantity: number; expectedDate: string }[]
+  /** `unitPrice`: the customer-entered rate; omitted when the line uses the SAP price-list rate unchanged. */
+  lines: { itemCode: string; quantity: number; expectedDate: string; unitPrice?: number }[]
   attachmentEntry?: number
 }
+
+/* ---------- Sales Order numbering series ----------
+ * Sufalam keeps one SO numbering series per day and per branch. SAP's default series doesn't follow the date,
+ * so the draft must name the series explicitly: the open (unlocked, automatic) series of the customer's branch
+ * whose period indicator is the one of the posting period that contains the PO date.
+ */
+interface SapSeries {
+  Series: number
+  Name?: string
+  Remarks?: string | null
+  Locked?: string
+  IsManual?: string
+  BPLID?: number | null
+  PeriodIndicator?: string | null
+}
+interface SapPeriod {
+  PostingDateFrom?: string
+  PostingDateTo?: string
+  PeriodIndicator?: string | null
+  Indicator?: string | null
+}
+
+const SERIES_TTL_MS = 5 * 60_000
+let soSeriesCache: { at: number; list: Promise<SapSeries[]> } | null = null
+let periodsCache: { at: number; list: Promise<SapPeriod[]> } | null = null
+
+function salesOrderSeriesList(fresh = false) {
+  if (fresh || !soSeriesCache || Date.now() - soSeriesCache.at > SERIES_TTL_MS) {
+    const list = sapRequest<{ value?: SapSeries[] }>('SeriesService_GetDocumentSeries', {
+      method: 'POST',
+      body: { DocumentTypeParams: { Document: '17' } }, // 17 = Sales Order
+    }).then((r) => r.value ?? [])
+    list.catch(() => (soSeriesCache = null))
+    soSeriesCache = { at: Date.now(), list }
+  }
+  return soSeriesCache.list
+}
+
+function postingPeriods(fresh = false) {
+  if (fresh || !periodsCache || Date.now() - periodsCache.at > SERIES_TTL_MS) {
+    const list = sapList<SapPeriod>('FinancePeriods', { pageSize: 500, maxPages: 10 }).catch((e) => {
+      console.warn('[po] cannot read FinancePeriods; series is picked without period indicator:', (e as Error).message)
+      return [] as SapPeriod[]
+    })
+    periodsCache = { at: Date.now(), list }
+  }
+  return periodsCache.list
+}
+
+/** Date spellings a series name / remark may carry, e.g. 14-11-2026, 141126, 20261114. */
+function dateTokens(iso: string) {
+  const [y, m, d] = iso.split('-')
+  const yy = y.slice(2)
+  return [`${d}-${m}-${y}`, `${d}/${m}/${y}`, `${d}.${m}.${y}`, `${d}${m}${y}`, `${d}-${m}-${yy}`, `${d}/${m}/${yy}`, `${d}.${m}.${yy}`, `${d}${m}${yy}`, iso, `${y}${m}${d}`]
+}
+
+/**
+ * Candidate SO series for a PO date and branch, best first. Empty when SAP has none open for that date.
+ * Exported for tests.
+ */
+export async function salesOrderSeriesFor(date: string, branch: number | null, fresh = false): Promise<number[]> {
+  const [series, periods] = await Promise.all([salesOrderSeriesList(fresh), postingPeriods(fresh)])
+  const open = series.filter(
+    (s) => s.Locked !== 'tYES' && s.IsManual !== 'tYES' && (branch == null || s.BPLID == null || s.BPLID === branch),
+  )
+
+  const period = periods.find((p) => isoDay(p.PostingDateFrom) <= date && date <= isoDay(p.PostingDateTo))
+  const indicator = (period?.PeriodIndicator ?? period?.Indicator ?? '').trim()
+  if (indicator) {
+    const byIndicator = open.filter((s) => (s.PeriodIndicator ?? '').trim() === indicator)
+    if (byIndicator.length) return byIndicator.sort((a, b) => Number(b.BPLID === branch) - Number(a.BPLID === branch)).map((s) => s.Series)
+  }
+
+  // No period info (or no series on that indicator): fall back to a series that names the date
+  const tokens = dateTokens(date)
+  return open.filter((s) => tokens.some((t) => `${s.Name ?? ''} ${s.Remarks ?? ''}`.includes(t))).map((s) => s.Series)
+}
+
+const isSeriesError = (e: unknown) => e instanceof SapError && /series/i.test(e.message)
 
 export async function createPurchaseOrderDraft(po: NewPurchaseOrder) {
   const dates = po.lines.map((l) => l.expectedDate).sort()
@@ -326,11 +413,12 @@ export async function createPurchaseOrderDraft(po: NewPurchaseOrder) {
     .join(' · ')
     .slice(0, 254)
 
-  try {
-    return await sapRequest<{ DocEntry: number; DocNum: number }>('Drafts', {
+  const post = (series: number | null) =>
+    sapRequest<{ DocEntry: number; DocNum: number }>('Drafts', {
       method: 'POST',
       body: {
         DocObjectCode: 'oOrders',
+        ...(series != null ? { Series: series } : {}),
         CardCode: po.cardCode,
         ...(po.branch != null ? { BPL_IDAssignedToInvoice: po.branch } : {}),
         NumAtCard: po.poNumber,
@@ -340,15 +428,43 @@ export async function createPurchaseOrderDraft(po: NewPurchaseOrder) {
         ...(po.shipTo ? { ShipToCode: po.shipTo } : {}),
         ...(po.attachmentEntry ? { AttachmentEntry: po.attachmentEntry } : {}),
         Comments: comments,
-        DocumentLines: po.lines.map((l) => ({ ItemCode: l.itemCode, Quantity: l.quantity, ShipDate: l.expectedDate })),
+        DocumentLines: po.lines.map((l) => ({
+          ItemCode: l.itemCode,
+          Quantity: l.quantity,
+          ShipDate: l.expectedDate,
+          // priced items get their rate from the customer's price list in SAP; the rest carry the manual rate
+          ...(l.unitPrice != null ? { UnitPrice: l.unitPrice, FreeText: MANUAL_RATE_NOTE } : {}),
+        })),
       },
     })
+
+  try {
+    let candidates: number[] = []
+    try {
+      candidates = await salesOrderSeriesFor(po.poDate, po.branch)
+      // Sufalam may have opened the day's series after we cached the list — look again before giving up
+      if (!candidates.length) candidates = await salesOrderSeriesFor(po.poDate, po.branch, true)
+    } catch (e) {
+      console.warn('[po] cannot read Sales Order numbering series; SAP will pick one:', (e as Error).message)
+    }
+    if (!candidates.length) return await post(null) // nothing matched: let SAP pick (and report) the series itself
+
+    let lastError: unknown
+    for (const series of candidates.slice(0, 5)) {
+      try {
+        return await post(series)
+      } catch (e) {
+        if (!isSeriesError(e)) throw e // a real validation error — not a series problem
+        lastError = e
+      }
+    }
+    throw lastError
   } catch (e) {
     // Sufalam uses one numbering series per day and branch; SAP rejects dates with no open series.
     if (e instanceof SapError && /numbering series/i.test(e.message)) {
       throw new SapError(
         e.status,
-        `SAP has no document numbering series open for ${po.poDate}. Please ask Sufalam to open the sales order series for this date, then submit again.`,
+        `SAP has no document numbering series open for ${dmy(po.poDate)}. Please ask Sufalam to open the sales order series for this date, then submit again.`,
         e.code,
       )
     }
@@ -424,7 +540,7 @@ export async function getPendingProformas(cardCode: string, signal?: AbortSignal
       docEntry: d.DocEntry,
       pi: `PI-${d.DocNum}`,
       ref: baseSo ? `sales order #${baseSo}` : d.NumAtCard ? `PO ${d.NumAtCard}` : 'your order',
-      details: [`Raised ${isoDay(d.DocDate)}`, `due ${isoDay(d.DocDueDate)}`, `${item} · ${qty}`, d.Comments]
+      details: [`Raised ${dmy(d.DocDate)}`, `due ${dmy(d.DocDueDate)}`, `${item} · ${qty}`, d.Comments]
         .filter(Boolean)
         .join(' · '),
       amount: n(d.DocTotal) - n(d.PaidToDate),

@@ -187,13 +187,19 @@ async function main() {
   // read-only: the backend rejects the PO on the price check, before any attachment or draft is written to SAP
   const unpricedItem = items.find((i) => i.rate == null)
   if (unpricedItem) {
-    await t('Create PO', 'PO with an unpriced item is rejected before SAP', 'POST /api/orders', async () => {
+    await t('Create PO', 'Unpriced item without a manual rate is rejected before SAP', 'POST /api/orders', async () => {
       const r = await call('POST', '/api/orders', formOf({ po: { poNumber: `API-TEST-NOPRICE-${Date.now()}`, poDate: SERIES_DATE, deliveryTerms: 'FOR Destination', freight: "To Sufalam's account", shipTo: customer.shipTo[0]?.code ?? '', remarks: '', lines: [{ itemCode: unpricedItem.code, quantity: 1, expectedDate: SERIES_DATE }] } }, {}))
       expect(r, 400)
-      assert(/Price is not available/.test(r.body?.error?.message ?? ''), `unexpected: ${errText(r)}`)
+      assert(/No price is maintained/.test(r.body?.error?.message ?? ''), `unexpected: ${errText(r)}`)
       return errText(r)
     })
-  } else skip('Create PO', 'PO with an unpriced item is rejected before SAP', 'every item has a price')
+    await t('Create PO', 'Unpriced item with a zero manual rate is rejected before SAP', 'POST /api/orders', async () => {
+      const r = await call('POST', '/api/orders', formOf({ po: { poNumber: `API-TEST-ZERORATE-${Date.now()}`, poDate: SERIES_DATE, deliveryTerms: 'FOR Destination', freight: "To Sufalam's account", shipTo: customer.shipTo[0]?.code ?? '', remarks: '', lines: [{ itemCode: unpricedItem.code, quantity: 1, expectedDate: SERIES_DATE, unitPrice: 0 }] } }, {}))
+      expect(r, 400)
+      assert(/rate must be greater than zero/.test(r.body?.error?.message ?? ''), `unexpected: ${errText(r)}`)
+      return errText(r)
+    })
+  } else skip('Create PO', 'Unpriced item without a manual rate is rejected before SAP', 'every item has a price')
   await t('Payments', 'Pending proforma invoices', 'GET /api/proformas', async () => `${expect(await call<unknown[]>('GET', '/api/proformas'), 200).length} open PIs`)
   await t('Payments', 'Payment history', 'GET /api/payments', async () => {
     const p = expect(await call<portal.Payment[]>('GET', '/api/payments'), 200)

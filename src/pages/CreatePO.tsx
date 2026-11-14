@@ -2,6 +2,7 @@ import { useMemo, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Topbar } from '../components/AppLayout'
 import { Async, Card } from '../components/ui'
+import { DateInput } from '../components/DateInput'
 import { useCustomer } from '../components/header'
 import { useToast } from '../components/toast'
 import { PRICE_UNAVAILABLE, todayIso, type SalesItem } from '../api/portal'
@@ -19,6 +20,8 @@ interface Line {
   code: string
   qty: number
   date: string
+  /** Rate box contents. Prefilled with the SAP price-list rate (when there is one); the customer may change it. Empty = use the SAP rate. */
+  manualRate: string
 }
 
 interface Header {
@@ -37,7 +40,7 @@ const loadDraft = (cardCode: string): { header: Header; lines: Line[] } | null =
     const raw = localStorage.getItem(`${DRAFT_KEY}.${cardCode}`)
     if (!raw) return null
     const d = JSON.parse(raw) as { header: Header; lines: Omit<Line, 'id'>[] }
-    return { header: d.header, lines: d.lines.map((l) => ({ ...l, id: nextId++ })) }
+    return { header: d.header, lines: d.lines.map((l) => ({ ...l, manualRate: l.manualRate ?? '', id: nextId++ })) }
   } catch {
     return null
   }
@@ -82,7 +85,13 @@ function POForm({ items }: { items: SalesItem[] }) {
     remarks: '',
   }
   const [header, setHeader] = useState<Header>(saved?.header ?? blankHeader)
-  const [lines, setLines] = useState<Line[]>(saved?.lines ?? [{ id: nextId++, code: items[0].code, qty: 1, date: '' }])
+  const sapRateText = (code: string) => {
+    const r = items.find((i) => i.code === code)?.rate
+    return r == null ? '' : String(r)
+  }
+  const [lines, setLines] = useState<Line[]>(
+    saved?.lines ?? [{ id: nextId++, code: items[0].code, qty: 1, date: '', manualRate: sapRateText(items[0].code) }],
+  )
   const [file, setFile] = useState<File | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -93,13 +102,24 @@ function POForm({ items }: { items: SalesItem[] }) {
   const setH = (patch: Partial<Header>) => setHeader((h) => ({ ...h, ...patch }))
 
   const validQty = (q: number) => Number.isFinite(q) && q > 0
-  /** Quantity × SAP rate, or null when the line can't be priced (no SAP price or invalid quantity). */
+  /** The rate in the box, else the SAP price-list rate when the box is empty; null when there's no valid positive rate. */
+  const lineRate = (l: Line) => {
+    if (l.manualRate.trim() === '') return byCode.get(l.code)?.rate ?? null
+    const r = Number(l.manualRate)
+    return Number.isFinite(r) && r > 0 ? r : null
+  }
+  /** True when the line's rate is not the SAP price-list rate (none maintained, or the customer changed it). */
+  const isManual = (l: Line) => {
+    const sap = byCode.get(l.code)?.rate
+    return sap == null || lineRate(l) !== sap
+  }
+  /** Quantity × rate, or null when the line can't be priced (no rate or invalid quantity). */
   const lineAmount = (l: Line) => {
-    const rate = byCode.get(l.code)?.rate
+    const rate = lineRate(l)
     const amt = rate != null && validQty(l.qty) ? l.qty * rate : NaN
     return Number.isFinite(amt) && amt > 0 ? amt : null
   }
-  const unpriced = lines.flatMap((l, i) => (byCode.get(l.code)?.rate == null ? [i + 1] : []))
+  const manualLines = lines.flatMap((l, i) => (isManual(l) ? [i + 1] : []))
   const allPriced = lines.every((l) => lineAmount(l) != null)
   const subTotal = lines.reduce((s, l) => s + (lineAmount(l) ?? 0), 0)
   const gst = Math.round(subTotal * GST_RATE)
@@ -115,7 +135,7 @@ function POForm({ items }: { items: SalesItem[] }) {
       const it = byCode.get(l.code)
       if (!it) return `Line ${i + 1}: choose an item.`
       if (!validQty(l.qty)) return `Line ${i + 1}: quantity must be greater than zero.`
-      if (it.rate == null) return `Line ${i + 1} (${it.name}): ${PRICE_UNAVAILABLE}`
+      if (lineRate(l) == null) return `Line ${i + 1} (${it.name}): ${l.manualRate.trim() ? 'the rate must be greater than zero.' : PRICE_UNAVAILABLE}`
       if (lineAmount(l) == null) return `Line ${i + 1} (${it.name}): the amount could not be calculated. Check the quantity.`
       if (!l.date) return `Line ${i + 1}: choose an expected delivery date.`
       if (l.date < header.poDate) return `Line ${i + 1}: expected delivery can't be before the PO date.`
@@ -127,7 +147,7 @@ function POForm({ items }: { items: SalesItem[] }) {
     try {
       localStorage.setItem(
         `${DRAFT_KEY}.${customer.code}`,
-        JSON.stringify({ header, lines: lines.map(({ code, qty, date }) => ({ code, qty, date })) }),
+        JSON.stringify({ header, lines: lines.map(({ code, qty, date, manualRate }) => ({ code, qty, date, manualRate })) }),
       )
       toast.success('Draft saved', 'Your PO is saved on this device. Attach the PDF again before submitting.')
     } catch {
@@ -151,7 +171,12 @@ function POForm({ items }: { items: SalesItem[] }) {
           freight: header.freight,
           shipTo: header.shipTo,
           remarks: header.remarks,
-          lines: lines.map((l) => ({ itemCode: l.code, quantity: l.qty, expectedDate: l.date })),
+          lines: lines.map((l) => ({
+            itemCode: l.code,
+            quantity: l.qty,
+            expectedDate: l.date,
+            ...(isManual(l) ? { unitPrice: lineRate(l) ?? undefined } : {}),
+          })),
         },
         file,
       )
@@ -184,7 +209,7 @@ function POForm({ items }: { items: SalesItem[] }) {
             </div>
             <div className="field">
               <label>PO date *</label>
-              <input type="date" value={header.poDate} onChange={(e) => setH({ poDate: e.target.value })} />
+              <DateInput aria-label="PO date" value={header.poDate} onChange={(poDate) => setH({ poDate })} />
             </div>
             <div className="field">
               <label>PO copy (PDF) *</label>
@@ -223,7 +248,7 @@ function POForm({ items }: { items: SalesItem[] }) {
         </div>
       </Card>
 
-      <Card title="PO lines" actions={<span className="hint">rates from your SAP price list #{customer.priceList}</span>}>
+      <Card title="PO lines" actions={<span className="hint">rates prefilled from SAP price list #{customer.priceList} where available; you can edit them</span>}>
         <div className="table-wrap">
           <table className="po-lines">
             <thead>
@@ -242,7 +267,7 @@ function POForm({ items }: { items: SalesItem[] }) {
                 return (
                   <tr key={l.id}>
                     <td>
-                      <select className="input-sm" value={it.code} onChange={(e) => update(l.id, { code: e.target.value })}>
+                      <select className="input-sm" value={it.code} onChange={(e) => update(l.id, { code: e.target.value, manualRate: sapRateText(e.target.value) })}>
                         {items.map((p) => (
                           <option key={p.code} value={p.code}>
                             {p.name}
@@ -266,24 +291,30 @@ function POForm({ items }: { items: SalesItem[] }) {
                       />
                     </td>
                     <td className="num">
-                      {it.rate != null ? (
-                        amount(it.rate)
-                      ) : (
-                        <span className="tag a" title={PRICE_UNAVAILABLE}>
-                          Price unavailable
-                        </span>
-                      )}
+                      <input
+                        className="input-sm rate-input"
+                        type="number"
+                        min={0}
+                        step={0.01}
+                        placeholder={it.rate != null ? String(it.rate) : 'Enter rate'}
+                        aria-label={`Rate for ${it.name}`}
+                        title={it.rate != null ? `SAP price-list rate: ${amount(it.rate)}` : PRICE_UNAVAILABLE}
+                        value={l.manualRate}
+                        onChange={(e) => update(l.id, { manualRate: e.target.value })}
+                      />
+                      <br />
+                      <small>{isManual(l) ? 'manual rate' : 'price list'}</small>
                     </td>
                     <td className="num">
-                      <b>{it.rate != null ? amount(lineAmount(l) ?? 0) : '—'}</b>
+                      <b>{lineAmount(l) != null ? amount(lineAmount(l)!) : '—'}</b>
                     </td>
                     <td>
-                      <input
+                      <DateInput
                         className="input-sm"
-                        type="date"
+                        aria-label="Expected delivery"
                         min={header.poDate || undefined}
                         value={l.date}
-                        onChange={(e) => update(l.id, { date: e.target.value })}
+                        onChange={(date) => update(l.id, { date })}
                       />
                     </td>
                     <td>
@@ -307,14 +338,17 @@ function POForm({ items }: { items: SalesItem[] }) {
           <button
             type="button"
             className="btn btn-ghost addline"
-            onClick={() => setLines((ls) => [...ls, { id: nextId++, code: items[0].code, qty: 1, date: ls[ls.length - 1]?.date ?? '' }])}
+            onClick={() =>
+              setLines((ls) => [...ls, { id: nextId++, code: items[0].code, qty: 1, date: ls[ls.length - 1]?.date ?? '', manualRate: sapRateText(items[0].code) }])
+            }
           >
             ＋ Add line
           </button>
-          {unpriced.length > 0 && (
-            <p className="form-error" role="status" style={{ marginTop: '1rem' }}>
-              {unpriced.length === 1 ? `Line ${unpriced[0]}: ` : `Lines ${unpriced.join(', ')}: `}
-              {PRICE_UNAVAILABLE} The price needs to be configured or verified in SAP price list #{customer.priceList}.
+          {manualLines.length > 0 && (
+            <p className="hint" role="status" style={{ marginTop: '1rem' }}>
+              {manualLines.length === 1 ? `Line ${manualLines[0]}: ` : `Lines ${manualLines.join(', ')}: `}
+              {manualLines.length === 1 ? 'the rate is' : 'the rates are'} entered manually (no price, or a different price, in
+              your SAP price list #{customer.priceList}). Sufalam checks manual rates when it approves the order.
             </p>
           )}
           <div className="totals">

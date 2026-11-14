@@ -95,6 +95,13 @@ a{color:var(--purple-700);text-decoration:none}
 .field input,.field select,.field textarea{width:100%;border:1.5px solid var(--line);border-radius:10px;padding:.65rem .8rem;font-size:.9rem;font-family:inherit;background:#fff;color:var(--ink);outline:none;transition:.15s}
 .field input:focus,.field select:focus,.field textarea:focus{border-color:var(--green-600);box-shadow:0 0 0 3px var(--green-100)}
 .input-sm{border:1.5px solid var(--line);border-radius:8px;padding:.35rem .5rem;font-size:.8rem;font-family:inherit;color:var(--ink)}
+/* dd-mm-yyyy date field (components/DateInput.tsx) */
+.date-input{position:relative;display:inline-block}
+.field .date-input{display:block}
+.date-input input[type=text]{padding-right:2.1rem}
+.date-input input.input-sm{width:130px}
+.date-input .date-input-btn{position:absolute;right:.35rem;top:50%;transform:translateY(-50%);border:0;background:none;cursor:pointer;font-size:.9rem;line-height:1;padding:.2rem}
+.date-input .date-input-native{position:absolute;right:0;bottom:0;width:1px;height:1px;padding:0;border:0;opacity:0;pointer-events:none}
 .btn{border:none;border-radius:10px;padding:.72rem 1.3rem;font-weight:600;font-size:.9rem;transition:.15s;display:inline-flex;align-items:center;gap:.45rem}
 .btn-sm{padding:.4rem .95rem;font-size:.78rem}
 .btn-primary{background:var(--green-700);color:#fff}
@@ -231,6 +238,7 @@ td small{color:var(--muted)}
 th.num{text-align:right}
 .rm{color:var(--red);cursor:pointer;background:none;border:none;font-size:.9rem}
 .qty-input{width:80px;text-align:right}
+.rate-input{width:100px;text-align:right}
 
 .tag{display:inline-flex;align-items:center;gap:.3rem;font-size:.7rem;font-weight:700;border-radius:99px;padding:.22rem .6rem;white-space:nowrap}
 .tag::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}

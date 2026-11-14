@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import type { TagTone } from '../api/portal'
-import { longDate } from '../utils/format'
+import { fmtDate } from '../utils/format'
 
 export function Brandmark() {
   return (
@@ -74,7 +74,7 @@ export function Tile({
 }
 
 /** Purple = customer's expected date · Green = date confirmed by Sufalam. `value` is an ISO date. */
-export function DateChip({ kind, value, format = longDate }: { kind: 'exp' | 'conf'; value: string | null; format?: (iso: string) => string }) {
+export function DateChip({ kind, value, format = fmtDate }: { kind: 'exp' | 'conf'; value: string | null; format?: (iso: string) => string }) {
   if (!value) return <span className={`dchip ${kind} pending`}>pending</span>
   return <span className={`dchip ${kind}`}>{format(value)}</span>
 }

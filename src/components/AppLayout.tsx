@@ -3,6 +3,7 @@ import { Link, Navigate, NavLink, Outlet, useLocation, useNavigate } from 'react
 import { Brandmark, ErrorState, Loading } from './ui'
 import { NotificationBell, ProfileMenu, useCustomer, usePortal, useSignOut } from './header'
 import { rupees } from '../utils/format'
+import { dmy, todayIso } from '../api/portal'
 
 type NavLinkDef = { to: string; icon: string; label: string; pill?: 'pis' | 'inTransit' }
 
@@ -117,7 +118,7 @@ function greeting() {
 
 function AppHeader({ onMenu }: { onMenu: () => void }) {
   const customer = useCustomer()
-  const today = new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric' })
+  const today = `${new Date().toLocaleDateString('en-IN', { weekday: 'long' })}, ${dmy(todayIso())}`
 
   return (
     <header className="app-header">

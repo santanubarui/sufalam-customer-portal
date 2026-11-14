@@ -14,6 +14,7 @@ import type {
   ProformaInvoice,
   SalesItem,
 } from './portal'
+import { dmy } from './portal'
 
 export { errorMessage } from './sap'
 
@@ -143,13 +144,25 @@ export const getPendingProformas = (signal?: AbortSignal) => api<ProformaInvoice
 export const getPayments = (signal?: AbortSignal) => api<Payment[]>('payments', { signal })
 export const getDeliveries = (signal?: AbortSignal) => api<{ inTransit: Delivery[]; acknowledged: Delivery[] }>('deliveries', { signal })
 export const getLedger = (from: string, to: string, signal?: AbortSignal) =>
-  api<{ opening: number; closing: number; rows: LedgerRow[] }>(`ledger?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { signal })
+  api<{ opening: number; closing: number; rows: LedgerRow[] }>(`ledger?from=${encodeURIComponent(dmy(from))}&to=${encodeURIComponent(dmy(to))}`, { signal })
 
 export type PurchaseOrderInput = Omit<NewPurchaseOrder, 'cardCode' | 'branch' | 'attachmentEntry'>
 
-/** Creates the PO as a sales-order draft in SAP; `attachWarning` is set when only the PDF upload failed. */
+/**
+ * Creates the PO as a sales-order draft in SAP; `attachWarning` is set when only the PDF upload failed.
+ * Dates go over the API as dd-mm-yyyy; the server turns them back into ISO for SAP.
+ */
 export const submitPurchaseOrder = (po: PurchaseOrderInput, file: File | null) =>
-  api<{ docEntry: number; docNum: number; attachWarning: string }>('orders', { method: 'POST', body: form({ po }, { file }) })
+  api<{ docEntry: number; docNum: number; attachWarning: string }>('orders', {
+    method: 'POST',
+    body: form(
+      { po: { ...po, poDate: dmy(po.poDate), lines: po.lines.map((l) => ({ ...l, expectedDate: dmy(l.expectedDate) })) } },
+      { file },
+    ),
+  })
 
 export const acknowledgeDelivery = (docEntry: number, ack: { receivedOn: string; condition: string; remarks: string }, photo: File | null) =>
-  api<{ attachWarning: string }>(`deliveries/${docEntry}/ack`, { method: 'POST', body: form({ ack }, { photo }) })
+  api<{ attachWarning: string }>(`deliveries/${docEntry}/ack`, {
+    method: 'POST',
+    body: form({ ack: { ...ack, receivedOn: dmy(ack.receivedOn) } }, { photo }),
+  })

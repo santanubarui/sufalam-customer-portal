@@ -5,7 +5,7 @@ import { useCustomer } from '../components/header'
 import { useToast } from '../components/toast'
 import { getPayments, getPendingProformas } from '../api/client'
 import { useAsync } from '../hooks/useAsync'
-import { amount, longDate, rupees } from '../utils/format'
+import { amount, fmtDate, rupees } from '../utils/format'
 
 export default function Payments() {
   const customer = useCustomer()
@@ -102,7 +102,7 @@ export default function Payments() {
                   <tbody>
                     {list.slice(0, 25).map((p) => (
                       <tr key={p.docEntry}>
-                        <td>{longDate(p.date)}</td>
+                        <td>{fmtDate(p.date)}</td>
                         <td>{p.ref}</td>
                         <td>{p.mode}</td>
                         <td>{p.txnRef}</td>

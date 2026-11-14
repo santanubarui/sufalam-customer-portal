@@ -123,6 +123,9 @@ scripts/
 Sufalam-specific SAP rules the portal relies on:
 - **Branches** are enabled (1 Sufalam Industries, 3 Agri Division, 4 Bottling). Documents use the customer's branch from `BPBranchAssignment`.
 - **Numbering series** for sales documents are per day and per branch; a series must exist for the PO date (P-01).
+  The draft is posted with an explicit `Series`: the unlocked, automatic SO series (document 17) of the customer's
+  branch whose period indicator matches the posting period of the PO date (fallback: a series whose name/remarks
+  contain the date). The series list is cached for 5 minutes and re-read when no series matches.
 - **Business partners** must have numeric codes and be created inactive (`SBO_SP_TRANSACTIONNOTIFICATION`).
 - **PO approval**: the portal creates a *draft* sales order; Sufalam adds it as a Sales Order in SAP.
 - Uploaded files get unique names (`PO_<card>_<po>_<stamp>.pdf`, `ACK_…`, `KYC_<gstin>_…`) because SAP rejects a file name that already exists in the attachments folder.
