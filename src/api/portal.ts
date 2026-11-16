@@ -279,13 +279,14 @@ interface SapItem {
   ItemCode: string
   ItemName: string
   SalesUnit: string | null
+  InventoryUOM?: string | null
   ItemPrices?: { PriceList: number; Price: number }[]
 }
 
 export async function getSalesItems(priceList: number, signal?: AbortSignal): Promise<SalesItem[]> {
   const items = await sapList<SapItem>(
     odata('Items', {
-      select: 'ItemCode,ItemName,SalesUnit,ItemPrices',
+      select: 'ItemCode,ItemName,SalesUnit,InventoryUOM,ItemPrices',
       filter: "SalesItem eq 'tYES' and Valid eq 'tYES' and Frozen eq 'tNO' and ItemType ne 'itFixedAssets'",
       orderby: 'ItemName',
     }),
@@ -297,7 +298,7 @@ export async function getSalesItems(priceList: number, signal?: AbortSignal): Pr
     return {
       code: i.ItemCode,
       name: i.ItemName?.trim() || i.ItemCode, // a few SAP items have no name — show the code instead
-      unit: i.SalesUnit ?? '',
+      unit: i.SalesUnit || i.InventoryUOM || '', // no sales unit set: the PO line falls back to the inventory UoM
       rate: typeof price === 'number' && Number.isFinite(price) && price > 0 ? price : null,
     }
   })
@@ -405,6 +406,51 @@ export async function salesOrderSeriesFor(date: string, branch: number | null, f
 
 const isSeriesError = (e: unknown) => e instanceof SapError && /series/i.test(e.message)
 
+/* ---------- Sales unit of measure ----------
+ * Items in a UoM group need a UoM on every document line. SAP fills it from the item's default sales UoM, but many
+ * Sufalam items have none set (e.g. 41834: group "NOS", DefaultSalesUoMEntry null) and SAP then rejects the line
+ * with 1470000315 "specify a UoM code". So each line names its UoM, read from the item master:
+ *   default sales UoM → inventory UoM (if allowed for sales) → the group's base UoM (if allowed) → first sales UoM.
+ * Items with manual UoM (group -1) take no UoMEntry.
+ */
+interface SapItemUom {
+  UoMGroupEntry?: number | null
+  DefaultSalesUoMEntry?: number | null
+  InventoryUoMEntry?: number | null
+  ItemUnitOfMeasurementCollection?: { UoMType?: string; UoMEntry?: number }[]
+}
+
+const uomGroupBase = new Map<number, Promise<number | null>>()
+function baseUomOf(group: number) {
+  let p = uomGroupBase.get(group)
+  if (!p) {
+    p = sapRequest<{ BaseUoM?: number | null }>(`UnitOfMeasurementGroups(${group})?$select=BaseUoM`).then((g) => g.BaseUoM ?? null)
+    p.catch(() => uomGroupBase.delete(group))
+    uomGroupBase.set(group, p)
+  }
+  return p
+}
+
+/** The UoMEntry to put on a sales document line for this item; null when SAP needs none (manual UoM). Exported for tests. */
+export async function salesUomEntry(itemCode: string): Promise<number | null> {
+  const it = await sapRequest<SapItemUom>(
+    `Items(${lit(itemCode)})?$select=UoMGroupEntry,DefaultSalesUoMEntry,InventoryUoMEntry,ItemUnitOfMeasurementCollection`,
+  )
+  const group = it.UoMGroupEntry ?? -1
+  if (group === -1) return null // manual UoM: free-text unit, no UoMEntry
+  if (it.DefaultSalesUoMEntry != null && it.DefaultSalesUoMEntry > 0) return it.DefaultSalesUoMEntry
+
+  const sales = (it.ItemUnitOfMeasurementCollection ?? [])
+    .filter((u) => u.UoMType === 'iutSales' && u.UoMEntry != null)
+    .map((u) => u.UoMEntry as number)
+  const allowed = (e: number | null | undefined): e is number => e != null && e > 0 && (!sales.length || sales.includes(e))
+
+  if (allowed(it.InventoryUoMEntry)) return it.InventoryUoMEntry
+  const base = await baseUomOf(group).catch(() => null)
+  if (allowed(base)) return base
+  return sales[0] ?? it.InventoryUoMEntry ?? base ?? null
+}
+
 export async function createPurchaseOrderDraft(po: NewPurchaseOrder) {
   const dates = po.lines.map((l) => l.expectedDate).sort()
   const dueDate = dates[dates.length - 1]
@@ -412,6 +458,9 @@ export async function createPurchaseOrderDraft(po: NewPurchaseOrder) {
     .filter(Boolean)
     .join(' · ')
     .slice(0, 254)
+
+  const codes = [...new Set(po.lines.map((l) => l.itemCode))]
+  const uoms = new Map(await Promise.all(codes.map(async (c) => [c, await salesUomEntry(c)] as const)))
 
   const post = (series: number | null) =>
     sapRequest<{ DocEntry: number; DocNum: number }>('Drafts', {
@@ -432,6 +481,7 @@ export async function createPurchaseOrderDraft(po: NewPurchaseOrder) {
           ItemCode: l.itemCode,
           Quantity: l.quantity,
           ShipDate: l.expectedDate,
+          ...(uoms.get(l.itemCode) != null ? { UoMEntry: uoms.get(l.itemCode) } : {}),
           // priced items get their rate from the customer's price list in SAP; the rest carry the manual rate
           ...(l.unitPrice != null ? { UnitPrice: l.unitPrice, FreeText: MANUAL_RATE_NOTE } : {}),
         })),
