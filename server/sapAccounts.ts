@@ -30,6 +30,20 @@ export async function findCustomersByEmail(email: string): Promise<CustomerRef[]
   return rows.map((r) => ({ cardCode: r.CardCode, name: r.CardName }))
 }
 
+/** The active (not frozen) customer whose CardCode is `code`, or null. */
+export async function customerByCode(code: string): Promise<CustomerRef | null> {
+  if (!code || !/^[\w.-]{1,50}$/.test(code)) return null
+  try {
+    const bp = await sapRequest<{ CardCode: string; CardName: string; CardType: string; Frozen: string }>(
+      `BusinessPartners(${lit(code)})?$select=CardCode,CardName,CardType,Frozen`,
+    )
+    return bp.CardType === 'cCustomer' && bp.Frozen !== 'tYES' ? { cardCode: bp.CardCode, name: bp.CardName } : null
+  } catch (e) {
+    if (e instanceof SapError && e.status === 404) return null
+    throw e
+  }
+}
+
 /**
  * Has Sufalam approved this registration? Approved = the lead was converted to a customer in SAP,
  * or a customer with the registration email was created instead.

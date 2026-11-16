@@ -5,6 +5,7 @@
  *   POST Api/Auth/OTPcheck             { UserCode, UserMail, OTP }                  → verifies the OTP
  *   POST Api/Auth/UpdatePass           { UserCode, UserMail, OTP, NewPassword, ConfirmPassword }
  *   POST Api/user_rep/ChangePassword   { UserId, OldPassword, NewPassword, ConfirmPassword }
+ *   GET  Api/user/UserLogIn?UserCode=…&UserPassword=…                              → signs a user in
  *
  * The documentation does not describe the response bodies, so `call` accepts the usual shapes
  * (a plain string, or an object with Status / Success / Message …) and turns a failure into an HttpError
@@ -62,22 +63,44 @@ function saysFailure(data: unknown, message: string): boolean {
   return !!message && FAIL_TEXT.test(message)
 }
 
+export type DtsLogin =
+  | { ok: false; message: string }
+  | { ok: true; message: string; userId?: number; userCode: string; name: string; email: string; cardCode: string; fields: string[] }
+
+/** The user record inside a login reply: the object itself, the first array row, or a Data / User / Result wrapper. */
+function loginRecord(data: unknown): Record<string, unknown> {
+  const d = Array.isArray(data) ? data[0] : data
+  if (!d || typeof d !== 'object') return {}
+  const o = d as Record<string, unknown>
+  for (const k of ['Data', 'data', 'User', 'user', 'UserData', 'Result', 'result', 'Table', 'Response']) {
+    const inner = Array.isArray(o[k]) ? (o[k] as unknown[])[0] : o[k]
+    if (inner && typeof inner === 'object') return { ...o, ...(inner as Record<string, unknown>) }
+  }
+  return o
+}
+
+/** First non-empty value among the keys. */
+function pick(o: Record<string, unknown>, keys: string[]): unknown {
+  for (const k of keys) {
+    const v = o[k]
+    if (v !== undefined && v !== null && typeof v !== 'object' && String(v).trim() !== '') return v
+  }
+  return undefined
+}
+
 export function connectDtsApi(cfg: ServerConfig) {
   const agent = new https.Agent({ keepAlive: true, rejectUnauthorized: !cfg.dtsTlsInsecure })
 
-  function post(path: string, body: unknown): Promise<{ status: number; text: string }> {
+  function request(method: 'GET' | 'POST', path: string, body?: unknown): Promise<{ status: number; text: string }> {
     const u = new URL(path, `${cfg.dtsBase}/`)
-    const payload = Buffer.from(JSON.stringify(body))
+    const payload = body === undefined ? null : Buffer.from(JSON.stringify(body))
     const lib = u.protocol === 'https:' ? https : http
+    const headers: Record<string, string> = { accept: 'application/json' }
+    if (payload) Object.assign(headers, { 'content-type': 'application/json', 'content-length': String(payload.length) })
     return new Promise((resolve, reject) => {
       const r = lib.request(
         u,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', accept: 'application/json', 'content-length': String(payload.length) },
-          agent: u.protocol === 'https:' ? agent : undefined,
-          timeout: TIMEOUT_MS,
-        },
+        { method, headers, agent: u.protocol === 'https:' ? agent : undefined, timeout: TIMEOUT_MS },
         (res) => {
           const chunks: Buffer[] = []
           res.on('data', (c: Buffer) => chunks.push(c))
@@ -87,9 +110,10 @@ export function connectDtsApi(cfg: ServerConfig) {
       )
       r.on('timeout', () => r.destroy(new Error('timed out')))
       r.on('error', reject)
-      r.end(payload)
+      r.end(payload ?? undefined)
     })
   }
+  const post = (path: string, body: unknown) => request('POST', path, body)
 
   /** Calls the API; returns its success message, throws HttpError with its failure message. */
   async function call(path: string, body: unknown, fallbackOk: string): Promise<{ message: string; data: unknown }> {
@@ -118,8 +142,51 @@ export function connectDtsApi(cfg: ServerConfig) {
     return { message: message || fallbackOk, data }
   }
 
+  /**
+   * Api/user/UserLogIn. The API takes the credentials in the query string (GET), so the URL is never logged.
+   * Returns ok:false for rejected credentials; throws HttpError only when the service is unavailable.
+   */
+  async function userLogin(userCode: string, password: string): Promise<DtsLogin> {
+    if (!cfg.dtsBase) throw new HttpError(503, 'The Sufalam account service is not configured on the portal server (SUFALAM_API_URL).')
+    const q = new URLSearchParams({ UserCode: userCode, UserPassword: password })
+    let res: { status: number; text: string }
+    try {
+      res = await request('GET', `Api/user/UserLogIn?${q}`)
+    } catch (e) {
+      console.error('[dts] Api/user/UserLogIn failed:', (e as Error).message)
+      throw new HttpError(502, 'The Sufalam account service is not reachable right now. Please try again shortly.')
+    }
+    let data: unknown = res.text
+    try {
+      data = res.text ? JSON.parse(res.text) : null
+    } catch {
+      /* plain-text reply */
+    }
+    if (res.status >= 500) {
+      console.error(`[dts] Api/user/UserLogIn HTTP ${res.status}: ${res.text.slice(0, 300)}`)
+      throw new HttpError(502, 'The Sufalam account service had a problem. Please try again shortly.')
+    }
+    const message = messageOf(data)
+    const empty = data === null || data === false || (typeof data === 'string' && !data.trim()) || (Array.isArray(data) && !data.length)
+    if (res.status >= 400 || empty || saysFailure(data, message)) return { ok: false, message }
+    const user = loginRecord(data)
+    const userId = Number(pick(user, ['UserId', 'UserID', 'userId', 'Userid', 'USERID', 'Id', 'ID', 'id', 'InternalKey']))
+    return {
+      ok: true,
+      message,
+      userId: Number.isInteger(userId) && userId > 0 ? userId : undefined,
+      userCode: String(pick(user, ['UserCode', 'userCode', 'USER_CODE']) ?? userCode).trim(),
+      name: String(pick(user, ['UserName', 'Name', 'name', 'FullName', 'CardName', 'U_NAME']) ?? '').trim(),
+      email: String(pick(user, ['UserMail', 'Email', 'email', 'EmailId', 'EmailID', 'E_Mail', 'Mail', 'EmailAddress']) ?? '').trim(),
+      cardCode: String(pick(user, ['CardCode', 'cardCode', 'CustomerCode', 'BPCode', 'CustCode']) ?? '').trim(),
+      // field names only (no values) — for diagnosing replies whose shape the API docs don't describe
+      fields: typeof data === 'object' && data ? Object.keys(user) : [`(${typeof data})`],
+    }
+  }
+
   return {
     configured: () => !!cfg.dtsBase,
+    userLogin,
     forgotPassword: (b: Pick<ForgotPassBody, 'UserCode' | 'UserMail'>) =>
       call('Api/Auth/ForgotPassword', { ...b, OTP: '', NewPassword: '', ConfirmPassword: '' }, 'A verification code has been sent to your email.'),
     otpCheck: (b: Pick<ForgotPassBody, 'UserCode' | 'UserMail' | 'OTP'>) =>

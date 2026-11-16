@@ -40,9 +40,9 @@ export default function Login() {
     <PublicLayout>
       <form className="auth-card" onSubmit={onSubmit}>
         <h2>Welcome back</h2>
-        <p className="sub">Sign in with your registered email ID (or SAP user ID) and password.</p>
+        <p className="sub">Sign in with your Sufalam user code (or registered email ID) and password.</p>
         <div className="field">
-          <label htmlFor="email">Email ID / User ID</label>
+          <label htmlFor="email">User code / Email ID</label>
           <input
             id="email"
             type="text"
