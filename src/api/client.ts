@@ -109,6 +109,22 @@ export const auth = {
   forgotPassword: (email: string) => api<{ message: string }>('auth/password/forgot', { method: 'POST', body: { email }, anonymous: true }),
   resetPassword: (email: string, code: string, password: string) =>
     api<{ message: string }>('auth/password/reset', { method: 'POST', body: { email, code, password }, anonymous: true }),
+  /** Password change for the signed-in user (DTS Api/user_rep/ChangePassword). */
+  changePassword: (oldPassword: string, password: string, confirm: string) =>
+    api<{ message: string }>('auth/password/change', { method: 'POST', body: { oldPassword, password, confirm } }),
+}
+
+/** Forgot-password flow on the DTS Sufalam API: send code → check code → set the new password. */
+export const dtsPassword = {
+  /** Api/Auth/ForgotPassword — emails an OTP to the user. */
+  forgot: (userCode: string, email: string) =>
+    api<{ message: string }>('auth/dts/forgot', { method: 'POST', body: { userCode, email }, anonymous: true }),
+  /** Api/Auth/OTPcheck */
+  checkOtp: (userCode: string, email: string, otp: string) =>
+    api<{ message: string }>('auth/dts/otp', { method: 'POST', body: { userCode, email, otp }, anonymous: true }),
+  /** Api/Auth/UpdatePass */
+  update: (userCode: string, email: string, otp: string, password: string, confirm: string) =>
+    api<{ message: string }>('auth/dts/update', { method: 'POST', body: { userCode, email, otp, password, confirm }, anonymous: true }),
 }
 
 export interface RegistrationData {

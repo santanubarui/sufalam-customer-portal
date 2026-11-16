@@ -281,6 +281,9 @@ export function ProfileMenu({ variant = 'light', showName = false }: { variant?:
               <Link to="/statements" onClick={dd.close}>
                 ≣ Account statement
               </Link>
+              <Link to="/change-password" onClick={dd.close}>
+                🔒 Change password
+              </Link>
               <div className="dd-sep" />
               <button className="danger" onClick={onSignOut}>
                 ⎋ Sign out

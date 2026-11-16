@@ -2,18 +2,24 @@ import { useState, type FormEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { PublicLayout } from '../components/ui'
 import { useToast } from '../components/toast'
-import { auth, errorMessage } from '../api/client'
+import { dtsPassword, errorMessage } from '../api/client'
 
-type Step = 'email' | 'reset' | 'done'
+type Step = 'request' | 'otp' | 'reset' | 'done'
 
 const MIN_LENGTH = 8
 
-/** Password reset — also used for the first sign-in of existing customers and newly approved registrations. */
+/**
+ * Password reset through the DTS Sufalam API:
+ *   1. user code + email  → Api/Auth/ForgotPassword (code emailed)
+ *   2. verification code  → Api/Auth/OTPcheck
+ *   3. new password       → Api/Auth/UpdatePass
+ */
 export default function ForgotPassword() {
   const navigate = useNavigate()
   const toast = useToast()
   const [params] = useSearchParams()
-  const [step, setStep] = useState<Step>('email')
+  const [step, setStep] = useState<Step>('request')
+  const [userCode, setUserCode] = useState(params.get('code') ?? '')
   const [email, setEmail] = useState(params.get('email') ?? '')
   const [otp, setOtp] = useState('')
   const [password, setPassword] = useState('')
@@ -23,26 +29,34 @@ export default function ForgotPassword() {
   const [busy, setBusy] = useState(false)
   const [resent, setResent] = useState(false)
 
-  const requestCode = async () => {
+  /** Runs one API step with shared busy / error handling; returns false when it failed. */
+  const run = async (title: string, fn: () => Promise<{ message: string }>) => {
     setError('')
     setBusy(true)
     try {
-      const r = await auth.forgotPassword(email.trim())
+      const r = await fn()
       setNotice(r.message)
       return true
     } catch (err) {
       const msg = errorMessage(err)
       setError(msg)
-      toast.error('Could not send the code', msg)
+      toast.error(title, msg)
       return false
     } finally {
       setBusy(false)
     }
   }
 
+  const requestCode = () => run('Could not send the code', () => dtsPassword.forgot(userCode.trim(), email.trim()))
+
   const sendCode = async (e: FormEvent) => {
     e.preventDefault()
-    if (await requestCode()) setStep('reset')
+    if (!userCode.trim()) return setError('Enter your user code.')
+    if (await requestCode()) {
+      setOtp('')
+      setResent(false)
+      setStep('otp')
+    }
   }
 
   const resend = async () => {
@@ -53,53 +67,63 @@ export default function ForgotPassword() {
     }
   }
 
-  const resetPassword = async (e: FormEvent) => {
+  const verifyCode = async (e: FormEvent) => {
     e.preventDefault()
-    if (!/^\d{6}$/.test(otp)) return setError('Enter the 6-digit code sent to your email.')
+    if (!/^[A-Za-z0-9]{4,12}$/.test(otp.trim())) return setError('Enter the verification code sent to your email.')
+    if (await run('Code not accepted', () => dtsPassword.checkOtp(userCode.trim(), email.trim(), otp.trim()))) setStep('reset')
+  }
+
+  const updatePassword = async (e: FormEvent) => {
+    e.preventDefault()
     if (password.length < MIN_LENGTH) return setError(`Password must be at least ${MIN_LENGTH} characters.`)
     if (!/[A-Za-z]/.test(password) || !/\d/.test(password)) return setError('Password must contain letters and numbers.')
     if (password !== confirm) return setError('Passwords do not match.')
-    setError('')
-    setBusy(true)
-    try {
-      await auth.resetPassword(email.trim(), otp, password)
-      toast.success('Password set', 'You can now sign in with your new password.')
+    const ok = await run('Could not update the password', () =>
+      dtsPassword.update(userCode.trim(), email.trim(), otp.trim(), password, confirm),
+    )
+    if (ok) {
+      toast.success('Password updated', 'You can now sign in with your new password.')
       setStep('done')
-    } catch (err) {
-      const msg = errorMessage(err)
-      setError(msg)
-      toast.error('Could not set the password', msg)
-    } finally {
-      setBusy(false)
     }
   }
 
+  const errorLine = error && (
+    <p className="form-error" role="alert">
+      {error}
+    </p>
+  )
+
   return (
     <PublicLayout>
-      {step === 'email' && (
+      {step === 'request' && (
         <form className="auth-card" onSubmit={sendCode}>
           <h2>Forgot password?</h2>
-          <p className="sub">
-            Enter your registered email ID and we'll send you a 6-digit verification code. First time here? Use the email
-            ID registered with Sufalam to set up your login.
-          </p>
+          <p className="sub">Enter your user code and registered email ID, and we'll email you a verification code.</p>
+          <div className="field">
+            <label htmlFor="fp-code">User code</label>
+            <input
+              id="fp-code"
+              required
+              autoFocus
+              autoComplete="username"
+              placeholder="Your portal user code"
+              value={userCode}
+              onChange={(e) => setUserCode(e.target.value)}
+            />
+          </div>
           <div className="field">
             <label htmlFor="fp-email">Email ID</label>
             <input
               id="fp-email"
               type="email"
               required
-              autoFocus
+              autoComplete="email"
               placeholder="accounts@yourcompany.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
             />
           </div>
-          {error && (
-            <p className="form-error" role="alert">
-              {error}
-            </p>
-          )}
+          {errorLine}
           <button type="submit" className="btn btn-grad btn-block" disabled={busy}>
             {busy ? 'Sending…' : 'Send verification code'}
           </button>
@@ -108,19 +132,19 @@ export default function ForgotPassword() {
           </div>
           <div className="divider">need help?</div>
           <p className="auth-note">
-            If you no longer have access to your registered email, contact your Sufalam sales representative to update
-            it.
+            If you don't know your user code or no longer have access to your registered email, contact your Sufalam sales
+            representative.
           </p>
         </form>
       )}
 
-      {step === 'reset' && (
-        <form className="auth-card" onSubmit={resetPassword} noValidate>
-          <h2>Set a new password</h2>
+      {step === 'otp' && (
+        <form className="auth-card" onSubmit={verifyCode} noValidate>
+          <h2>Enter verification code</h2>
           <p className="sub">
             {notice || <>We sent a code to <b>{email}</b>.</>}{' '}
-            <button type="button" className="linkbtn" onClick={() => setStep('email')}>
-              Change email
+            <button type="button" className="linkbtn" onClick={() => setStep('request')}>
+              Change details
             </button>
           </p>
           <div className="field">
@@ -128,21 +152,42 @@ export default function ForgotPassword() {
             <input
               id="fp-otp"
               className="otp-input"
-              inputMode="numeric"
               autoComplete="one-time-code"
-              maxLength={6}
+              maxLength={12}
               autoFocus
               placeholder="••••••"
               value={otp}
-              onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
+              onChange={(e) => setOtp(e.target.value.replace(/[^A-Za-z0-9]/g, ''))}
             />
           </div>
+          {errorLine}
+          <button type="submit" className="btn btn-grad btn-block" disabled={busy}>
+            {busy ? 'Checking…' : 'Verify code'}
+          </button>
+          <div className="auth-links">
+            <Link to="/login">← Back to sign in</Link>
+            {resent ? (
+              <span className="muted">Code resent ✓</span>
+            ) : (
+              <button type="button" className="linkbtn" onClick={() => void resend()} disabled={busy}>
+                Resend code
+              </button>
+            )}
+          </div>
+        </form>
+      )}
+
+      {step === 'reset' && (
+        <form className="auth-card" onSubmit={updatePassword} noValidate>
+          <h2>Set a new password</h2>
+          <p className="sub">Code verified for <b>{email}</b>. Choose a new password.</p>
           <div className="field">
             <label htmlFor="fp-new">New password</label>
             <input
               id="fp-new"
               type="password"
               autoComplete="new-password"
+              autoFocus
               placeholder={`At least ${MIN_LENGTH} characters, letters and numbers`}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -159,23 +204,12 @@ export default function ForgotPassword() {
               onChange={(e) => setConfirm(e.target.value)}
             />
           </div>
-          {error && (
-            <p className="form-error" role="alert">
-              {error}
-            </p>
-          )}
+          {errorLine}
           <button type="submit" className="btn btn-grad btn-block" disabled={busy}>
-            {busy ? 'Saving…' : 'Set password'}
+            {busy ? 'Saving…' : 'Update password'}
           </button>
           <div className="auth-links">
             <Link to="/login">← Back to sign in</Link>
-            {resent ? (
-              <span className="muted">Code resent ✓</span>
-            ) : (
-              <button type="button" className="linkbtn" onClick={() => void resend()} disabled={busy}>
-                Resend code
-              </button>
-            )}
           </div>
         </form>
       )}
@@ -184,7 +218,7 @@ export default function ForgotPassword() {
         <div className="auth-card">
           <div className="auth-success">✓</div>
           <h2>Password updated</h2>
-          <p className="sub">Your password has been set. Sign in with your email ID and new password to continue.</p>
+          <p className="sub">{notice || 'Your password has been updated.'} Sign in with your new password to continue.</p>
           <button className="btn btn-grad btn-block" onClick={() => navigate('/login')}>
             Back to sign in
           </button>

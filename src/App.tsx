@@ -9,6 +9,7 @@ import Orders from './pages/Orders'
 import Payments from './pages/Payments'
 import InTransit from './pages/InTransit'
 import Statements from './pages/Statements'
+import ChangePassword from './pages/ChangePassword'
 import { PortalProvider, ProfileMenu, usePortal } from './components/header'
 import { ToastProvider } from './components/toast'
 
@@ -59,6 +60,7 @@ export default function App() {
         <Route path="/payments" element={<Payments />} />
         <Route path="/in-transit" element={<InTransit />} />
         <Route path="/statements" element={<Statements />} />
+        <Route path="/change-password" element={<ChangePassword />} />
       </Route>
       <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>

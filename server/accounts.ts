@@ -36,6 +36,8 @@ export interface PortalUser {
   updatedAt: string
   lastLoginAt?: string
   registration?: Registration
+  /** user id in the DTS Sufalam API (needed by Api/user_rep/ChangePassword); set once sign-in goes through that API */
+  dtsUserId?: number
 }
 
 export const normEmail = (e: string) => String(e ?? '').trim().toLowerCase()

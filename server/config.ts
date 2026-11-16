@@ -36,6 +36,10 @@ export interface ServerConfig {
   notifyEmail: string
   /** customer (CardCode) opened when someone signs in with SAP user credentials; '' disables SAP-user sign-in */
   staffCardCode: string
+  /** DTS Sufalam API root (password reset / change), e.g. https://host:port — '' when not configured */
+  dtsBase: string
+  /** accept the DTS API's internal / self-signed certificate */
+  dtsTlsInsecure: boolean
 }
 
 const bool = (v: string | undefined, dflt: boolean) => (v == null || v === '' ? dflt : /^(1|true|yes|on)$/i.test(v))
@@ -89,5 +93,8 @@ export function readConfig(env: Env, production: boolean): ServerConfig {
     mailFrom: env.MAIL_FROM || 'Sufalam Customer Portal <no-reply@sufalam.local>',
     notifyEmail: env.REGISTRATION_NOTIFY_EMAIL || '',
     staffCardCode: env.PORTAL_STAFF_CARD_CODE || (production ? '' : env.VITE_DEV_CARD_CODE) || '',
+    // accepts the root with or without a trailing /Api
+    dtsBase: (env.SUFALAM_API_URL || '').trim().replace(/\/+$/, '').replace(/\/api$/i, ''),
+    dtsTlsInsecure: bool(env.SUFALAM_API_TLS_INSECURE, bool(env.SAP_TLS_INSECURE, true)),
   }
 }

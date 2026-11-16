@@ -3,6 +3,8 @@
  *
  *   Auth      POST /api/auth/login · POST /api/auth/logout · GET /api/auth/me
  *             POST /api/auth/password/forgot · POST /api/auth/password/reset
+ *             DTS Sufalam API (server/dts.ts): POST /api/auth/dts/forgot · /api/auth/dts/otp · /api/auth/dts/update
+ *                                              POST /api/auth/password/change (signed in)
  *   Register  POST /api/register (multipart: data + KYC files) → SAP Lead
  *   Data      GET  /api/customer · /api/orders · /api/items · /api/invoices/open · /api/proformas
  *                  /api/payments · /api/deliveries · /api/ledger?from&to
@@ -31,6 +33,7 @@ import { bad, clientIp, cookie, formFiles, formJson, HttpError, parseCookies, Ra
 import { createMailer, type Mail } from './mail'
 import { approvedCustomer, checkFile, collectKycFiles, createLead, findCustomersByEmail, uniqueStamp, validateRegistration } from './sapAccounts'
 import { connectServiceLayer } from './sl'
+import { connectDtsApi } from './dts'
 
 const SESSION_COOKIE = 'sufalam_session'
 const CSRF_HEADER = 'x-requested-with'
@@ -77,6 +80,8 @@ export function createApp(cfg: ServerConfig) {
   const resendLimiter = new RateLimiter(1, 60_000)
   const otpLimiter = new RateLimiter(5, 60 * 60_000)
   const registerLimiter = new RateLimiter(5, 60 * 60_000)
+  const otpCheckLimiter = new RateLimiter(5, 15 * 60_000)
+  const dts = connectDtsApi(cfg)
 
   /* ---------- customer record cache (price list, branch, ship-to) ---------- */
   const customers = new Map<string, { at: number; c: portal.Customer }>()
@@ -255,6 +260,73 @@ export function createApp(cfg: ServerConfig) {
       false,
     )
     return { message: 'Your password has been set. You can now sign in.' }
+  })
+
+  /* ---------- password via the DTS Sufalam API: forgot → OTP check → update; change ---------- */
+
+  const dtsIdentity = (body: { userCode?: unknown; email?: unknown }) => {
+    const UserCode = text(body.userCode, 50)
+    const UserMail = normEmail(String(body.email ?? ''))
+    if (!UserCode) throw bad('Enter your user code.')
+    if (!validEmail(UserMail)) throw bad('Enter a valid email address.')
+    return { UserCode, UserMail }
+  }
+  const dtsOtp = (v: unknown) => {
+    const OTP = text(v, 12)
+    if (!/^[A-Za-z0-9]{4,12}$/.test(OTP)) throw bad('Enter the verification code sent to your email.')
+    return OTP
+  }
+  const newPassword = (password: unknown, confirm: unknown) => {
+    const NewPassword = String(password ?? '')
+    const problem = passwordProblem(NewPassword)
+    if (problem) throw bad(problem)
+    if (NewPassword !== String(confirm ?? '')) throw bad('Passwords do not match.')
+    return { NewPassword, ConfirmPassword: NewPassword }
+  }
+
+  route('POST', '/api/auth/dts/forgot', false, async (ctx) => {
+    const id = dtsIdentity(await readJson(ctx.req))
+    ipLimiter.hit(`otp:${clientIp(ctx.req, cfg.trustProxy)}`)
+    resendLimiter.hit(`dts-otp:${id.UserMail}`, 'Please wait a minute before requesting another code.')
+    otpLimiter.hit(`dts-otp:${id.UserMail}`, 'Too many codes requested for this email. Please try again in an hour.')
+    const r = await dts.forgotPassword(id)
+    return { message: r.message }
+  })
+
+  route('POST', '/api/auth/dts/otp', false, async (ctx) => {
+    const body = await readJson<{ userCode?: string; email?: string; otp?: string }>(ctx.req)
+    const id = dtsIdentity(body)
+    const OTP = dtsOtp(body.otp)
+    ipLimiter.hit(`reset:${clientIp(ctx.req, cfg.trustProxy)}`)
+    otpCheckLimiter.hit(`dts-check:${id.UserMail}`, 'Too many incorrect attempts. Please request a new code.')
+    const r = await dts.otpCheck({ ...id, OTP })
+    return { message: r.message }
+  })
+
+  route('POST', '/api/auth/dts/update', false, async (ctx) => {
+    const body = await readJson<{ userCode?: string; email?: string; otp?: string; password?: string; confirm?: string }>(ctx.req)
+    const id = dtsIdentity(body)
+    const OTP = dtsOtp(body.otp)
+    const pw = newPassword(body.password, body.confirm)
+    ipLimiter.hit(`reset:${clientIp(ctx.req, cfg.trustProxy)}`)
+    const r = await dts.updatePassword({ ...id, OTP, ...pw })
+    otpCheckLimiter.reset(`dts-check:${id.UserMail}`)
+    return { message: r.message }
+  })
+
+  route('POST', '/api/auth/password/change', true, async (ctx) => {
+    const body = await readJson<{ oldPassword?: string; password?: string; confirm?: string }>(ctx.req)
+    const OldPassword = String(body.oldPassword ?? '')
+    if (!OldPassword) throw bad('Enter your current password.')
+    const pw = newPassword(body.password, body.confirm)
+    if (pw.NewPassword === OldPassword) throw bad('The new password must be different from the current one.')
+    const u = me(ctx)
+    // The DTS user id comes from the DTS sign-in; never accepted from the browser.
+    if (!Number.isInteger(u.dtsUserId)) throw new HttpError(409, 'Password change is not available for this account yet. Please use "Forgot password" on the sign-in page.')
+    loginLimiter.hit(`change:${u.email}`, 'Too many attempts. Please wait 15 minutes and try again.')
+    const r = await dts.changePassword({ UserId: u.dtsUserId!, OldPassword, ...pw })
+    loginLimiter.reset(`change:${u.email}`)
+    return { message: r.message }
   })
 
   /* ---------- new customer registration ---------- */
