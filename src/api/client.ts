@@ -103,12 +103,8 @@ export interface PortalUser {
 export const auth = {
   me: (signal?: AbortSignal) => api<{ user: PortalUser }>('auth/me', { signal, anonymous: true }),
   login: (email: string, password: string) =>
-    api<{ user: PortalUser; customer: Customer }>('auth/login', { method: 'POST', body: { email, password }, anonymous: true }),
+    api<{ user: PortalUser; customer: Customer | null }>('auth/login', { method: 'POST', body: { SAPUserId: email, SAPUserPassword: password }, anonymous: true }),
   logout: () => api<{ ok: true }>('auth/logout', { method: 'POST', anonymous: true }).catch(() => undefined),
-  /** Sends a 6-digit code (password reset, or first sign-in of an existing customer / approved registration). */
-  forgotPassword: (email: string) => api<{ message: string }>('auth/password/forgot', { method: 'POST', body: { email }, anonymous: true }),
-  resetPassword: (email: string, code: string, password: string) =>
-    api<{ message: string }>('auth/password/reset', { method: 'POST', body: { email, code, password }, anonymous: true }),
   /** Password change for the signed-in user (DTS Api/user_rep/ChangePassword). */
   changePassword: (oldPassword: string, password: string, confirm: string) =>
     api<{ message: string }>('auth/password/change', { method: 'POST', body: { oldPassword, password, confirm } }),

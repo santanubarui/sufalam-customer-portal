@@ -34,11 +34,15 @@ npm run dev                              # http://localhost:5173 — front end +
 Browser ──/api (HttpOnly session cookie)──▶ Portal backend (server/) ──service user──▶ SAP Service Layer
 ```
 
-- Customers sign in with their **email and portal password**. They never see or need an SAP user.
+- Customers sign in with their **Sufalam user code and password**, checked by the DTS Sufalam API
+  (`GET Api/user/UserLogIn` on `SUFALAM_API_URL`, https://sap.sufalamindustries.com:22401); sign-out calls
+  `GET Api/user/UserLogOut`. The portal stores no passwords. They never see or need an SAP user.
+- All business data (orders, items, invoices, payments, deliveries, ledger) comes live from SAP Service Layer at
+  `SAP_SL_ORIGIN` (https://dts.connectcloud365.com:59792/b1s/v2).
 - The backend signs in to Service Layer with one restricted **service user** and scopes every request to the
   signed-in customer's CardCode (taken from the session, never from the browser).
-- **First sign-in**: an existing customer enters the email held on their SAP business partner under
-  *Forgot password*, receives a 6-digit code and sets a password.
+- **First sign-in / forgotten password**: *Forgot password* sends a code through the DTS API
+  (`Api/Auth/ForgotPassword` → `OTPcheck` → `UpdatePass`).
 - **New customers** register on the portal → an inactive **Lead** is created in SAP with the KYC files attached →
   when Sufalam converts it to an active customer, the applicant is emailed a link to set a password.
 

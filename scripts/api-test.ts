@@ -3,8 +3,9 @@
  * the same way the browser does. The backend talks to the real SAP Service Layer.
  *   npm run test:api        auth, security, read APIs, error handling (no SAP writes)
  *   npm run test:api:write  also creates/deletes a PO draft, stamps + restores a delivery, creates/deletes a registration lead
- * Settings come from .env + .env.development(.local). Accounts are created in a temporary data folder and
- * no email is sent (OTP codes are read from the dev outbox), so SMTP must NOT be configured for tests.
+ * Settings come from .env + .env.development(.local). Sign-in uses a real Sufalam user from the DTS API:
+ * set TEST_USER_CODE and TEST_PASSWORD (the customer is whatever that login maps to). Portal accounts go to a
+ * temporary data folder and no email is sent, so SMTP must NOT be configured for tests.
  */
 import { mkdtempSync, rmSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -18,11 +19,15 @@ import { readConfig } from '../server/config'
 import { loadEnvFiles } from '../server/env'
 
 const env = loadEnvFiles('development')
-const CARD = env.VITE_DEV_CARD_CODE || env.TEST_CARD_CODE || '20108'
+const USER_CODE = env.TEST_USER_CODE || ''
+const PASSWORD = env.TEST_PASSWORD || ''
+if (!USER_CODE || !PASSWORD) {
+  console.error('Set TEST_USER_CODE and TEST_PASSWORD (a real Sufalam DTS login) in .env.development.local to run the API test.')
+  process.exit(1)
+}
+let CARD = ''
 const WRITE = process.argv.includes('--write')
 const SERIES_DATE = '2026-09-28' // last date with open SO numbering series in TEST_280726 (see PENDING_ISSUES P-01)
-const TEST_EMAIL = 'api-test@portal.test'
-const PASSWORD = 'Portal-test-2026'
 
 const dataDir = mkdtempSync(join(tmpdir(), 'sufalam-portal-test-'))
 const cfg = { ...readConfig(env, false), dataDir, cookieSecure: false, smtp: null }
@@ -71,11 +76,6 @@ const formOf = (fields: Record<string, unknown>, files: Record<string, File[]>) 
   return f
 }
 const pdf = (name: string) => new File([`%PDF-1.4\n% portal API test ${name}\n%%EOF\n`], name, { type: 'application/pdf' })
-const lastCode = (to: string) => {
-  const m = [...app.mailer.outbox].reverse().find((x) => x.to === to)?.text.match(/\b(\d{6})\b/)
-  return m?.[1]
-}
-
 /* ---------- test harness ---------- */
 type Row = { id: string; area: string; test: string; endpoint: string; result: 'PASS' | 'FAIL' | 'SKIP'; ms: number; detail: string }
 const rows: Row[] = []
@@ -105,63 +105,30 @@ const errText = (r: Res) => `HTTP ${r.status} → "${r.body?.error?.message}"`
 async function main() {
   await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok))
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
-  console.log(`Portal API on ${base} → SAP ${cfg.companyDB}; test customer ${CARD}; temp data ${dataDir}\n`)
+  console.log(`Portal API on ${base} → SAP ${cfg.companyDB}; test user ${USER_CODE}; temp data ${dataDir}\n`)
 
   /* ---------- security ---------- */
   await t('Security', 'Data call without a session is refused', 'GET /api/customer', async () => errText(await call('GET', '/api/customer').then((r) => (expect(r, 401), r))))
   await t('Security', 'POST without the portal CSRF header is blocked', 'POST /api/auth/login', async () =>
-    errText(await call('POST', '/api/auth/login', { email: TEST_EMAIL, password: 'x' }, { csrf: false }).then((r) => (expect(r, 403), r))),
+    errText(await call('POST', '/api/auth/login', { SAPUserId: USER_CODE, SAPUserPassword: 'x' }, { csrf: false }).then((r) => (expect(r, 403), r))),
   )
-  await t('Auth', 'Unknown email cannot sign in', 'POST /api/auth/login', async () =>
-    errText(await call('POST', '/api/auth/login', { email: 'nobody@portal.test', password: 'whatever1' }).then((r) => (expect(r, 401), r))),
+  await t('Auth', 'Unknown user cannot sign in (DTS UserLogIn)', 'POST /api/auth/login', async () =>
+    errText(await call('POST', '/api/auth/login', { SAPUserId: 'zz_no_such_user', SAPUserPassword: 'whatever1' }).then((r) => (expect(r, 401), r))),
   )
-  await t('Auth', 'Forgot password for an unknown email reveals nothing', 'POST /api/auth/password/forgot', async () => {
-    const before = app.mailer.outbox.length
-    const r = await call<{ message: string }>('POST', '/api/auth/password/forgot', { email: 'nobody@portal.test' })
-    expect(r, 200)
-    assert(app.mailer.outbox.length === before, 'an email was sent for an unknown address')
-    return `200 "${r.body.message.slice(0, 60)}…", no email sent`
-  })
-
-  /* ---------- account set-up via OTP ---------- */
-  const now = new Date().toISOString()
-  await app.users.save({ email: TEST_EMAIL, cardCode: CARD, name: CARD, status: 'active', sessionVersion: 0, createdAt: now, updatedAt: now })
-  let code = ''
-  await t('Auth', 'Request a password code (OTP email)', 'POST /api/auth/password/forgot', async () => {
-    expect(await call('POST', '/api/auth/password/forgot', { email: TEST_EMAIL }), 200)
-    code = lastCode(TEST_EMAIL) ?? ''
-    assert(/^\d{6}$/.test(code), 'no 6-digit code in the email')
-    return `code emailed to ${TEST_EMAIL}`
-  })
-  await t('Auth', 'Second code within a minute is throttled', 'POST /api/auth/password/forgot', async () =>
-    errText(await call('POST', '/api/auth/password/forgot', { email: TEST_EMAIL }).then((r) => (expect(r, 429), r))),
-  )
-  await t('Auth', 'Weak password is rejected', 'POST /api/auth/password/reset', async () =>
-    errText(await call('POST', '/api/auth/password/reset', { email: TEST_EMAIL, code, password: 'short' }).then((r) => (expect(r, 400), r))),
-  )
-  await t('Auth', 'Wrong code is rejected', 'POST /api/auth/password/reset', async () => {
-    const wrong = code === '000000' ? '111111' : '000000'
-    return errText(await call('POST', '/api/auth/password/reset', { email: TEST_EMAIL, code: wrong, password: PASSWORD }).then((r) => (expect(r, 400), r)))
-  })
-  await t('Auth', 'Correct code sets the password', 'POST /api/auth/password/reset', async () => {
-    const r = await call<{ message: string }>('POST', '/api/auth/password/reset', { email: TEST_EMAIL, code, password: PASSWORD })
-    expect(r, 200)
-    return r.body.message
-  })
-  await t('Auth', 'Used code cannot be reused', 'POST /api/auth/password/reset', async () =>
-    errText(await call('POST', '/api/auth/password/reset', { email: TEST_EMAIL, code, password: PASSWORD }).then((r) => (expect(r, 400), r))),
-  )
-  await t('Auth', 'Wrong password is rejected', 'POST /api/auth/login', async () =>
-    errText(await call('POST', '/api/auth/login', { email: TEST_EMAIL, password: 'Wrong-pass-1' }).then((r) => (expect(r, 401), r))),
+  await t('Auth', 'Wrong password is rejected (DTS UserLogIn)', 'POST /api/auth/login', async () =>
+    errText(await call('POST', '/api/auth/login', { SAPUserId: USER_CODE, SAPUserPassword: `${PASSWORD}-wrong` }).then((r) => (expect(r, 401), r))),
   )
 
   let customer!: portal.Customer
-  await t('Auth', 'Sign in with email + password', 'POST /api/auth/login', async () => {
-    const r = await call<{ customer: portal.Customer }>('POST', '/api/auth/login', { email: TEST_EMAIL, password: PASSWORD })
-    customer = expect(r, 200).customer
+  await t('Auth', 'Sign in with user code + password (DTS UserLogIn)', 'POST /api/auth/login', async () => {
+    const r = await call<{ user: { cardCode: string }; customer: portal.Customer }>('POST', '/api/auth/login', { SAPUserId: USER_CODE, SAPUserPassword: PASSWORD })
+    const body = expect(r, 200)
+    customer = body.customer
+    CARD = body.user.cardCode
     assert(jar.has('sufalam_session'), 'no session cookie')
     return `${customer.name} (${customer.code}); HttpOnly session cookie set`
   })
+  if (!CARD) throw new Error('Sign-in failed — check TEST_USER_CODE / TEST_PASSWORD and the SAP service user.')
   await t('Auth', 'Session survives a reload', 'GET /api/auth/me', async () => {
     const r = await call<{ user: { cardCode: string } }>('GET', '/api/auth/me')
     assert(expect(r, 200).user.cardCode === CARD, 'wrong customer')
@@ -280,19 +247,9 @@ async function main() {
       })
     }
 
-    // acknowledgement: own delivery, or sign in as the owner of another open delivery; restore afterwards
-    let dl = deliveries.inTransit[0]
-    let owner = CARD
-    if (!dl && other) {
-      owner = other.CardCode
-      const email = 'api-test-2@portal.test'
-      await app.users.save({ email, cardCode: owner, name: owner, status: 'active', sessionVersion: 0, createdAt: now, updatedAt: now })
-      await call('POST', '/api/auth/password/forgot', { email })
-      await call('POST', '/api/auth/password/reset', { email, code: lastCode(email), password: PASSWORD })
-      jar = newJar()
-      expect(await call('POST', '/api/auth/login', { email, password: PASSWORD }), 200, 'second test account')
-      dl = expect(await call<typeof deliveries>('GET', '/api/deliveries'), 200).inTransit[0]
-    }
+    // acknowledgement of the test customer's own open delivery; restored afterwards
+    const dl = deliveries.inTransit[0]
+    const owner = CARD
     if (dl) {
       const original = (await sapRequest<{ Comments: string | null }>(`DeliveryNotes(${dl.docEntry})?$select=Comments`)).Comments
       await t('In-Transit', `Acknowledge delivery (customer ${owner})`, `POST /api/deliveries/${dl.docEntry}/ack`, async () => {
@@ -350,12 +307,6 @@ async function main() {
     await t('Register', 'Same email cannot register twice', 'POST /api/register', async () =>
       errText(await call('POST', '/api/register', formOf({ data: reg }, kyc)).then((r) => (expect(r, 409), r))),
     )
-    await t('Register', 'Pending applicant gets "under review", no code', 'POST /api/auth/password/forgot', async () => {
-      expect(await call('POST', '/api/auth/password/forgot', { email: regEmail }), 200)
-      const last = [...app.mailer.outbox].reverse().find((m) => m.to === regEmail)
-      assert(last && /still being reviewed/.test(last.text) && !/\b\d{6}\b/.test(last.text.replace(lead, '')), 'expected the review notice')
-      return 'review notice emailed'
-    })
     if (lead) {
       await t('Cleanup', 'Delete test lead', `DELETE BusinessPartners('${lead}')`, async () => {
         await sapRequest(`BusinessPartners('${lead}')`, { method: 'DELETE' })
@@ -365,7 +316,7 @@ async function main() {
   }
 
   jar = newJar()
-  expect(await call('POST', '/api/auth/login', { email: TEST_EMAIL, password: PASSWORD }), 200)
+  expect(await call('POST', '/api/auth/login', { SAPUserId: USER_CODE, SAPUserPassword: PASSWORD }), 200)
   await t('Auth', 'Sign out ends the session', 'POST /api/auth/logout', async () => {
     expect(await call('POST', '/api/auth/logout'), 200)
     expect(await call('GET', '/api/customer'), 401, 'after logout')

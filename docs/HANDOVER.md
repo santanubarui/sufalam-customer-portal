@@ -47,7 +47,7 @@ All settings are listed in `.env.example`. Server-only (never sent to the browse
 
 | Key | Required | Purpose |
 | --- | --- | --- |
-| `SAP_SERVICE_USER`, `SAP_SERVICE_PASSWORD` | prod | SAP user the backend signs in with. In dev the `VITE_DEV_SAP_*` login is used if these are empty. |
+| `SAP_SERVICE_USER`, `SAP_SERVICE_PASSWORD` | prod | SAP user the backend signs in with. |
 | `SAP_COMPANY_DB`, `SAP_SL_ORIGIN`, `SAP_TLS_INSECURE` | — | Company DB (`.env` / `.env.production`), SL address, accept SL's internal certificate (default true) |
 | `PORTAL_SESSION_SECRET` | prod | ≥ 32 random characters; signs session cookies. Changing it signs everyone out. |
 | `PORTAL_PUBLIC_URL` | prod | Portal address used in emails |

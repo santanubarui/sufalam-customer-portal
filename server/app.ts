@@ -1,8 +1,7 @@
 /*
  * Portal backend API (mounted at /api).
  *
- *   Auth      POST /api/auth/login (DTS Api/user/UserLogIn first, then portal / SAP user) · POST /api/auth/logout · GET /api/auth/me
- *             POST /api/auth/password/forgot · POST /api/auth/password/reset
+ *   Auth      POST /api/auth/login (DTS Api/user/UserLogIn) · POST /api/auth/logout (the browser calls DTS Api/user/UserLogOut itself) · GET /api/auth/me
  *             DTS Sufalam API (server/dts.ts): POST /api/auth/dts/forgot · /api/auth/dts/otp · /api/auth/dts/update
  *                                              POST /api/auth/password/change (signed in)
  *   Register  POST /api/register (multipart: data + KYC files) → SAP Lead
@@ -16,16 +15,12 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import * as portal from '../src/api/portal'
 import { SapError } from '../src/api/sap'
 import {
-  hashPassword,
   normEmail,
-  OTP_MINUTES,
-  OtpStore,
   passwordProblem,
   readSession,
   signSession,
   UserStore,
   validEmail,
-  verifyPassword,
   type PortalUser,
 } from './accounts'
 import type { ServerConfig } from './config'
@@ -72,7 +67,6 @@ const safeName = (s: string) => s.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|
 export function createApp(cfg: ServerConfig) {
   const sl = connectServiceLayer(cfg)
   const users = new UserStore(cfg.dataDir)
-  const otp = new OtpStore()
   const mailer = createMailer(cfg)
 
   const loginLimiter = new RateLimiter(8, 15 * 60_000)
@@ -141,15 +135,25 @@ export function createApp(cfg: ServerConfig) {
     if (existing?.status === 'disabled') throw new HttpError(403, 'This portal account is disabled. Please contact Sufalam.')
     let cardCode = r.cardCode || (existing?.status === 'active' ? existing.cardCode : '')
     let name = r.name || existing?.name || r.userCode
-    if (!cardCode && validEmail(key)) {
-      const found = await findCustomersByEmail(key)
-      if (found.length === 1) ({ cardCode, name } = { cardCode: found[0].cardCode, name: found[0].name })
+    // SAP lookups are best effort: the DTS API has already signed the user in, so an unreachable SAP
+    // must not block the login (same as the DTS web app).
+    let sapDown = false
+    try {
+      if (!cardCode && validEmail(key)) {
+        const found = await findCustomersByEmail(key)
+        if (found.length === 1) ({ cardCode, name } = { cardCode: found[0].cardCode, name: found[0].name })
+      }
+      if (!cardCode) {
+        // Sufalam user codes are usually the customer's SAP CardCode (e.g. 20197)
+        const bp = await customerByCode(r.userCode)
+        if (bp) ({ cardCode, name } = { cardCode: bp.cardCode, name: r.name || bp.name })
+      }
+    } catch (e) {
+      if (!sapUnavailable(e)) throw e
+      sapDown = true
+      console.warn(`[login] SAP not reachable while mapping ${r.userCode} to a customer: ${(e as Error).message}`)
     }
-    if (!cardCode) {
-      // Sufalam user codes are usually the customer's SAP CardCode (e.g. 20197)
-      const bp = await customerByCode(r.userCode)
-      if (bp) ({ cardCode, name } = { cardCode: bp.cardCode, name: r.name || bp.name })
-    }
+    if (!cardCode && sapDown) cardCode = r.userCode
     if (!cardCode) {
       console.warn(`[dts] UserLogIn ok for ${r.userCode} but no customer found; reply fields: ${r.fields.join(', ') || '(none)'}`)
       throw new HttpError(403, 'Your login is not linked to a Sufalam customer account. Please contact Sufalam.')
@@ -160,57 +164,37 @@ export function createApp(cfg: ServerConfig) {
     return u
   }
 
+  /** SAP Service Layer down / service user rejected — as opposed to "record not found". */
+  const sapUnavailable = (e: unknown) => e instanceof SapError && (e.status === 0 || e.status >= 500)
+
   route('POST', '/api/auth/login', false, async (ctx) => {
-    const body = await readJson<{ email?: string; password?: string }>(ctx.req)
-    const email = normEmail(body.email ?? '')
-    const password = String(body.password ?? '')
-    const sapUser = !email.includes('@') && /^[\w.-]{1,50}$/.test(email)
-    if ((!validEmail(email) && !sapUser) || !password) throw bad('Enter your email ID (or SAP user ID) and password.')
+    const body = await readJson<{ SAPUserId?: string; SAPUserPassword?: string }>(ctx.req)
+    const email = normEmail(body.SAPUserId ?? '')
+    const password = String(body.SAPUserPassword ?? '')
+    if (!/^[\w.@+-]{1,100}$/.test(email) || !password) throw bad('Enter your user code (or email ID) and password.')
     ipLimiter.hit(`login:${clientIp(ctx.req, cfg.trustProxy)}`)
     loginLimiter.hit(`login:${email}`, 'Too many failed sign-in attempts. Please wait 15 minutes or reset your password.')
 
-    const rawId = String(body.email ?? '').trim()
-    let u: PortalUser | undefined
-    // 1. DTS Sufalam API (Api/user/UserLogIn). If it is down, the portal's own sign-in below still works.
-    let dtsDown: HttpError | null = null
-    if (dts.configured()) {
-      try {
-        const r = await dts.userLogin(rawId, password)
-        if (r.ok) u = await dtsAccount(r, email)
-      } catch (e) {
-        if (!(e instanceof HttpError) || e.status < 502) throw e
-        dtsDown = e
-      }
-    }
+    // Sign-in is checked only by the DTS Sufalam API (Api/user/UserLogIn); the portal stores no passwords.
+    if (!dts.configured()) throw new HttpError(503, 'Sign-in is not configured on the portal server (SUFALAM_API_URL).')
+    const r = await dts.userLogin(String(body.SAPUserId ?? '').trim(), password)
+    if (!r.ok) throw new HttpError(401, r.message || 'Incorrect user code or password.')
+    const u = await dtsAccount(r, email)
 
-    if (u) {
-      /* signed in by the DTS API */
-    } else if (sapUser) {
-      // SAP user ID (e.g. manager): the password is checked by SAP itself, never stored by the portal.
-      if (!cfg.staffCardCode) throw dtsDown ?? new HttpError(401, 'Incorrect user ID or password.')
-      if (!(await sl.verifyUser(rawId, password))) throw dtsDown ?? new HttpError(401, 'Incorrect user ID or password.')
-      const now = new Date().toISOString()
-      u = (await users.get(email)) ?? { email, cardCode: cfg.staffCardCode, name: rawId, status: 'active', sessionVersion: 1, createdAt: now, updatedAt: now }
-      u.cardCode = cfg.staffCardCode
-      u.status = 'active'
-      delete u.passwordHash
-    } else {
-      u = await users.get(email)
-      const ok = await verifyPassword(password, u?.passwordHash)
-      if (!u || !ok || u.status !== 'active') throw dtsDown ?? new HttpError(401, 'Incorrect email or password.')
-    }
-
-    let customer: portal.Customer
+    // Like the DTS web app, a successful UserLogIn signs the user in. The SAP customer record is loaded now
+    // when SAP is reachable, otherwise the portal loads it after sign-in (GET /api/customer, with Retry).
+    let customer: portal.Customer | null = null
     try {
       customer = await freshCustomer(u.cardCode)
     } catch (e) {
       if (e instanceof SapError && (e.status === 404 || e.status === 400)) {
         throw new HttpError(403, 'Your customer account is not active in SAP. Please contact Sufalam.')
       }
-      throw e
+      if (!sapUnavailable(e)) throw e
+      console.warn(`[login] ${u.cardCode} signed in by DTS; SAP customer record not loaded: ${(e as Error).message}`)
     }
     loginLimiter.reset(`login:${email}`)
-    u.name = customer.name
+    if (customer) u.name = customer.name
     u.lastLoginAt = new Date().toISOString()
     await users.save(u)
     setSession(ctx, u)
@@ -223,89 +207,6 @@ export function createApp(cfg: ServerConfig) {
   })
 
   route('GET', '/api/auth/me', true, async (ctx) => ({ user: publicUser(me(ctx)) }))
-
-  route('POST', '/api/auth/password/forgot', false, async (ctx) => {
-    const body = await readJson<{ email?: string }>(ctx.req)
-    const email = normEmail(body.email ?? '')
-    if (!validEmail(email)) throw bad('Enter a valid email address.')
-    ipLimiter.hit(`otp:${clientIp(ctx.req, cfg.trustProxy)}`)
-    resendLimiter.hit(`otp:${email}`, 'Please wait a minute before requesting another code.')
-    otpLimiter.hit(`otp:${email}`, 'Too many codes requested for this email. Please try again in an hour.')
-
-    const u = await users.get(email)
-    let link: { cardCode: string; name: string } | null = null
-
-    if (u?.status === 'active') {
-      link = { cardCode: u.cardCode, name: u.name }
-    } else if (u?.status === 'pending') {
-      const ok = u.registration ? await approvedCustomer(u.registration.leadCode, email) : null
-      if (ok) {
-        Object.assign(u, { status: 'active', cardCode: ok.cardCode, name: ok.name })
-        await users.save(u)
-        link = ok
-      } else {
-        await mail({
-          to: email,
-          subject: 'Sufalam portal — registration still under review',
-          text: `Your registration${u.registration ? ` (reference ${u.registration.leadCode})` : ''} is still being reviewed by Sufalam.\nYou will receive an email as soon as it is approved.`,
-        })
-      }
-    } else if (!u) {
-      // existing Sufalam customers: first sign-in with the email address held on their SAP account
-      const found = await findCustomersByEmail(email)
-      if (found.length === 1) link = found[0]
-      else if (found.length > 1) {
-        await mail({
-          to: email,
-          subject: 'Sufalam portal — please contact Sufalam',
-          text: `This email address is linked to ${found.length} customer accounts at Sufalam, so a portal login cannot be created automatically.\nPlease ask your Sufalam sales representative to set up your portal access.`,
-        })
-      }
-    }
-
-    if (link) {
-      const code = otp.issue(email, link)
-      await mail({
-        to: email,
-        subject: `Sufalam portal verification code: ${code}`,
-        text: `Your verification code is ${code}\n\nUse it to set your password for the Sufalam Customer Portal (${link.name}, customer ${link.cardCode}).\nThe code is valid for ${OTP_MINUTES} minutes. If you did not ask for it, you can ignore this email.`,
-      })
-    }
-    return { message: `If this email is registered with Sufalam, a 6-digit code has been sent to it. The code is valid for ${OTP_MINUTES} minutes.` }
-  })
-
-  route('POST', '/api/auth/password/reset', false, async (ctx) => {
-    const body = await readJson<{ email?: string; code?: string; password?: string }>(ctx.req)
-    const email = normEmail(body.email ?? '')
-    ipLimiter.hit(`reset:${clientIp(ctx.req, cfg.trustProxy)}`)
-    if (!validEmail(email)) throw bad('Enter a valid email address.')
-    if (!/^\d{6}$/.test(String(body.code ?? ''))) throw bad('Enter the 6-digit code sent to your email.')
-    const problem = passwordProblem(String(body.password ?? ''))
-    if (problem) throw bad(problem)
-
-    const r = otp.consume(email, String(body.code))
-    if (r === 'expired') throw bad('This code has expired or was already used. Please request a new code.')
-    if (r === 'wrong') throw bad('The code is incorrect. Please check the email and try again.')
-    if (r === 'locked') throw bad('Too many incorrect attempts. Please request a new code.')
-
-    const now = new Date().toISOString()
-    const u: PortalUser = (await users.get(email)) ?? { email, cardCode: r.cardCode, name: r.name, status: 'active', sessionVersion: 0, createdAt: now, updatedAt: now }
-    if (u.status === 'disabled') throw new HttpError(403, 'This portal account is disabled. Please contact Sufalam.')
-    Object.assign(u, {
-      cardCode: r.cardCode,
-      name: r.name,
-      status: 'active',
-      passwordHash: await hashPassword(String(body.password)),
-      sessionVersion: u.sessionVersion + 1,
-    })
-    await users.save(u)
-    loginLimiter.reset(`login:${email}`)
-    await mail(
-      { to: email, subject: 'Sufalam portal — password changed', text: `The password for your Sufalam Customer Portal account (${u.name}) was just set.\nIf this wasn't you, contact Sufalam immediately.` },
-      false,
-    )
-    return { message: 'Your password has been set. You can now sign in.' }
-  })
 
   /* ---------- password via the DTS Sufalam API: forgot → OTP check → update; change ---------- */
 

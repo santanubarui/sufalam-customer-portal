@@ -6,6 +6,10 @@
  *   POST Api/Auth/UpdatePass           { UserCode, UserMail, OTP, NewPassword, ConfirmPassword }
  *   POST Api/user_rep/ChangePassword   { UserId, OldPassword, NewPassword, ConfirmPassword }
  *   GET  Api/user/UserLogIn?UserCode=…&UserPassword=…                              → signs a user in
+ *   (Api/user/UserLogOut is called by the browser — src/api/dts.ts)
+ *
+ * Replies are HTTP 200 with a status inside, e.g. {"Table":[{"msg_code":"N","msg_desc":"Wrong User Name"}]}
+ * or [{"ReturnCode":"F-","ReturnMsg":"…"}].
  *
  * The documentation does not describe the response bodies, so `call` accepts the usual shapes
  * (a plain string, or an object with Status / Success / Message …) and turns a failure into an HttpError
@@ -36,29 +40,39 @@ export interface ChangePassBody {
 const FAIL_FLAG = /^(false|0|fail(ed|ure)?|error|invalid|n|no)$/i
 const FAIL_TEXT = /invalid|incorrect|wrong|not\s+(found|match|valid|exist|registered)|mismatch|expired|fail|error|does\s*n[o']t|unable|denied/i
 
+const MESSAGE_KEYS = ['msg_desc', 'MsgDesc', 'ReturnMsg', 'returnMsg', 'Message', 'message', 'Msg', 'msg', 'ResponseMessage', 'StatusMessage', 'ExceptionMessage', 'Error', 'error']
+// msg_code (e.g. {"Table":[{"msg_code":"N","msg_desc":"Wrong User Name"}]}) and ReturnCode ("F-") are what this API really sends
+const FLAG_KEYS = ['msg_code', 'MsgCode', 'ReturnCode', 'returnCode', 'Status', 'status', 'Success', 'success', 'IsSuccess', 'isSuccess', 'Result', 'result']
+const OK_FLAG = /^(true|1|s\+?|success|ok|y|yes)$/i
+const FAIL_FLAG_CODE = /^f-?$/i
+
 /** Pulls a human-readable message out of whatever the API returned. */
 function messageOf(data: unknown): string {
   if (typeof data === 'string') return data.trim()
-  if (!data || typeof data !== 'object') return ''
-  const o = data as Record<string, unknown>
-  for (const k of ['Message', 'message', 'Msg', 'msg', 'ResponseMessage', 'StatusMessage', 'ExceptionMessage', 'Error', 'error']) {
+  const o = loginRecord(data)
+  for (const k of MESSAGE_KEYS) {
     const v = o[k]
     if (typeof v === 'string' && v.trim()) return v.trim()
   }
   return ''
 }
 
+/** 'fail' / 'ok' when the reply carries an explicit status flag, else null. */
+function flagOf(data: unknown): 'ok' | 'fail' | null {
+  const o = loginRecord(data)
+  for (const k of FLAG_KEYS) {
+    const v = o[k]
+    if (v === false || v === 0) return 'fail'
+    if (typeof v === 'string' && (FAIL_FLAG.test(v.trim()) || FAIL_FLAG_CODE.test(v.trim()))) return 'fail'
+    if (v === true || v === 1 || (typeof v === 'string' && OK_FLAG.test(v.trim()))) return 'ok'
+  }
+  return null
+}
+
 /** true when a 2xx response still says the operation failed. */
 function saysFailure(data: unknown, message: string): boolean {
-  if (data && typeof data === 'object') {
-    const o = data as Record<string, unknown>
-    for (const k of ['Status', 'status', 'Success', 'success', 'IsSuccess', 'isSuccess', 'Result', 'result']) {
-      const v = o[k]
-      if (v === false || v === 0) return true
-      if (typeof v === 'string' && FAIL_FLAG.test(v.trim())) return true
-      if (v === true || v === 1 || (typeof v === 'string' && /^(true|1|success|ok|y|yes)$/i.test(v.trim()))) return false
-    }
-  }
+  const flag = flagOf(data)
+  if (flag) return flag === 'fail'
   // No explicit flag: judge by the wording of the message
   return !!message && FAIL_TEXT.test(message)
 }
@@ -66,6 +80,8 @@ function saysFailure(data: unknown, message: string): boolean {
 export type DtsLogin =
   | { ok: false; message: string }
   | { ok: true; message: string; userId?: number; userCode: string; name: string; email: string; cardCode: string; fields: string[] }
+
+const USER_ID_KEYS = ['UserId', 'UserID', 'userId', 'Userid', 'USERID', 'UId', 'Uid', 'uid', 'Id', 'ID', 'id', 'InternalKey']
 
 /** The user record inside a login reply: the object itself, the first array row, or a Data / User / Result wrapper. */
 function loginRecord(data: unknown): Record<string, unknown> {
@@ -167,17 +183,24 @@ export function connectDtsApi(cfg: ServerConfig) {
       throw new HttpError(502, 'The Sufalam account service had a problem. Please try again shortly.')
     }
     const message = messageOf(data)
-    const empty = data === null || data === false || (typeof data === 'string' && !data.trim()) || (Array.isArray(data) && !data.length)
-    if (res.status >= 400 || empty || saysFailure(data, message)) return { ok: false, message }
     const user = loginRecord(data)
-    const userId = Number(pick(user, ['UserId', 'UserID', 'userId', 'Userid', 'USERID', 'Id', 'ID', 'id', 'InternalKey']))
+    // Fail closed: accept only an explicit success flag or a reply that actually carries a user record.
+    const flag = flagOf(data)
+    const hasUser = pick(user, [...USER_ID_KEYS, 'UserCode', 'userCode', 'USER_CODE', 'CardCode', 'UserMail', 'E_Mail', 'Email']) !== undefined
+    const failed = res.status >= 400 || flag === 'fail' || (!flag && (!hasUser || saysFailure(data, message)))
+    // the password is in the query string, so only the user code is logged
+    console.log(`[dts] GET ${cfg.dtsBase}/Api/user/UserLogIn?UserCode=${userCode} → HTTP ${res.status}, ${failed ? 'rejected' : 'ok'}${message ? ` "${message}"` : ''}`)
+    if (failed) {
+      return { ok: false, message: message || 'Incorrect user code or password.' }
+    }
+    const userId = Number(pick(user, USER_ID_KEYS))
     return {
       ok: true,
       message,
       userId: Number.isInteger(userId) && userId > 0 ? userId : undefined,
       userCode: String(pick(user, ['UserCode', 'userCode', 'USER_CODE']) ?? userCode).trim(),
       name: String(pick(user, ['UserName', 'Name', 'name', 'FullName', 'CardName', 'U_NAME']) ?? '').trim(),
-      email: String(pick(user, ['UserMail', 'Email', 'email', 'EmailId', 'EmailID', 'E_Mail', 'Mail', 'EmailAddress']) ?? '').trim(),
+      email: String(pick(user, ['UserMail', 'E_Mail', 'Email', 'email', 'EmailId', 'EmailID', 'E_Mail', 'Mail', 'EmailAddress']) ?? '').trim(),
       cardCode: String(pick(user, ['CardCode', 'cardCode', 'CustomerCode', 'BPCode', 'CustCode']) ?? '').trim(),
       // field names only (no values) — for diagnosing replies whose shape the API docs don't describe
       fields: typeof data === 'object' && data ? Object.keys(user) : [`(${typeof data})`],

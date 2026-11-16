@@ -11,6 +11,7 @@ import {
   onSessionExpired,
   type PortalUser,
 } from '../api/client'
+import { dtsUserLogIn, dtsUserLogOut } from '../api/dts'
 import { rupees } from '../utils/format'
 import { useToast } from './toast'
 
@@ -37,7 +38,7 @@ interface PortalState {
   customer: Customer | null
   customerLoading: boolean
   customerError: string | null
-  signIn: (input: SignInInput) => Promise<Customer>
+  signIn: (input: SignInInput) => Promise<{ name: string }>
   signOut: () => Promise<void>
   refreshCustomer: () => void
   alerts: Alert[]
@@ -147,16 +148,20 @@ export function PortalProvider({ children }: { children: ReactNode }) {
   }, [customer, refreshAlerts])
 
   const signIn = useCallback(async (input: SignInInput) => {
+    // 1. DTS API straight from the browser (shows in the Network tab, like the DTS web app)
+    await dtsUserLogIn(input.email.trim(), input.password)
+    // 2. portal backend: checks the same login again, then opens the portal session
     const r = await auth.login(input.email.trim(), input.password)
+    // customer is null when SAP was not reachable at sign-in; the effect below loads it (with Retry on error)
     setCustomer(r.customer)
     setCustomerError(null)
     setCustomerLoading(false)
     setSession(r.user)
-    return r.customer
+    return { name: r.customer?.name || r.user.name }
   }, [])
 
   const signOut = useCallback(async () => {
-    await auth.logout()
+    await Promise.all([auth.logout(), dtsUserLogOut()])
     clear()
   }, [clear])
 

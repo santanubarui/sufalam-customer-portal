@@ -105,31 +105,6 @@ export function connectServiceLayer(cfg: ServerConfig) {
   configureSap({ baseUrl: cfg.slBase, fetch: slFetch })
 
   return {
-    /** Checks SAP user credentials with a separate SL login (closed right away). */
-    async verifyUser(userName: string, password: string): Promise<boolean> {
-      let res: Response
-      try {
-        res = await send(
-          `${cfg.slBase}/Login`,
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ CompanyDB: cfg.companyDB, UserName: userName, Password: password }),
-          },
-          '',
-        )
-      } catch (e) {
-        console.error(`[sl] cannot reach Service Layer at ${cfg.slBase}:`, (e as Error).message)
-        throw new SapError(0, 'SAP Service Layer is not reachable right now. Please try again shortly.')
-      }
-      if (!res.ok) return false
-      const cookie = res.headers
-        .getSetCookie()
-        .map((c) => c.split(';')[0])
-        .join('; ')
-      if (cookie) await send(`${cfg.slBase}/Logout`, { method: 'POST' }, cookie).catch(() => undefined)
-      return true
-    },
     async logout() {
       if (!session) return
       const cookie = await session.catch(() => '')

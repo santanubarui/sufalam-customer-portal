@@ -49,7 +49,7 @@ export default function Login() {
             required
             autoFocus
             autoComplete="username"
-            placeholder="accounts@yourcompany.com or manager"
+            placeholder="Your Sufalam user code"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
           />
@@ -80,8 +80,8 @@ export default function Login() {
         </div>
         <div className="divider">first time login</div>
         <p className="auth-note">
-          Already a Sufalam customer? Use <Link to="/forgot-password">Forgot password</Link> with the email ID registered with
-          Sufalam to set your password. Your session ends automatically after 30 minutes of inactivity.
+          Already a Sufalam customer? Use <Link to="/forgot-password">Forgot password</Link> with your user code and the email
+          ID registered with Sufalam to set your password. Your session ends automatically after 30 minutes of inactivity.
         </p>
       </form>
     </PublicLayout>

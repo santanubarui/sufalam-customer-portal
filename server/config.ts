@@ -34,9 +34,7 @@ export interface ServerConfig {
   mailFrom: string
   /** Sufalam mailbox told about new registrations (optional) */
   notifyEmail: string
-  /** customer (CardCode) opened when someone signs in with SAP user credentials; '' disables SAP-user sign-in */
-  staffCardCode: string
-  /** DTS Sufalam API root (password reset / change), e.g. https://host:port — '' when not configured */
+  /** DTS Sufalam API root (sign-in / sign-out, password reset / change), e.g. https://host:port — '' when not configured */
   dtsBase: string
   /** accept the DTS API's internal / self-signed certificate */
   dtsTlsInsecure: boolean
@@ -47,9 +45,8 @@ const bool = (v: string | undefined, dflt: boolean) => (v == null || v === '' ? 
 export function readConfig(env: Env, production: boolean): ServerConfig {
   const problems: string[] = []
 
-  // In development the existing dev SAP login (.env.development.local) is used as the service user.
-  const slUser = env.SAP_SERVICE_USER || (production ? '' : env.VITE_DEV_SAP_USER) || ''
-  const slPassword = env.SAP_SERVICE_PASSWORD || (production ? '' : env.VITE_DEV_SAP_PASSWORD) || ''
+  const slUser = env.SAP_SERVICE_USER || ''
+  const slPassword = env.SAP_SERVICE_PASSWORD || ''
   if (!slUser || !slPassword) problems.push('SAP_SERVICE_USER and SAP_SERVICE_PASSWORD must be set (see .env.example).')
 
   const companyDB = env.SAP_COMPANY_DB || env.VITE_SAP_COMPANY_DB || ''
@@ -64,7 +61,7 @@ export function readConfig(env: Env, production: boolean): ServerConfig {
   if (problems.length) throw new Error(`Portal server configuration:\n  - ${problems.join('\n  - ')}`)
 
   const port = Number(env.PORT) || 8080
-  const origin = (env.SAP_SL_ORIGIN || 'https://sufalam.connectcloud365.com:57138').replace(/\/+$/, '')
+  const origin = (env.SAP_SL_ORIGIN || 'https://dts.connectcloud365.com:59792').replace(/\/+$/, '')
 
   return {
     production,
@@ -92,9 +89,8 @@ export function readConfig(env: Env, production: boolean): ServerConfig {
       : null,
     mailFrom: env.MAIL_FROM || 'Sufalam Customer Portal <no-reply@sufalam.local>',
     notifyEmail: env.REGISTRATION_NOTIFY_EMAIL || '',
-    staffCardCode: env.PORTAL_STAFF_CARD_CODE || (production ? '' : env.VITE_DEV_CARD_CODE) || '',
     // accepts the root with or without a trailing /Api
-    dtsBase: (env.SUFALAM_API_URL || '').trim().replace(/\/+$/, '').replace(/\/api$/i, ''),
+    dtsBase: (env.SUFALAM_API_URL || 'https://sap.sufalamindustries.com:22401').trim().replace(/\/+$/, '').replace(/\/api$/i, ''),
     dtsTlsInsecure: bool(env.SUFALAM_API_TLS_INSECURE, bool(env.SAP_TLS_INSECURE, true)),
   }
 }
