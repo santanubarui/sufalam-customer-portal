@@ -177,6 +177,8 @@ export function createApp(cfg: ServerConfig) {
       try {
         const r = await dts.userLogin(rawId, password)
         if (r.ok) u = await dtsAccount(r, email)
+        // show the account service's own reason (e.g. password expired) instead of a generic message
+        else if (r.message) dtsDown = new HttpError(401, r.message)
       } catch (e) {
         if (!(e instanceof HttpError) || e.status < 502) throw e
         dtsDown = e

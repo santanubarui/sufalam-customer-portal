@@ -34,14 +34,14 @@ export interface ChangePassBody {
 }
 
 const FAIL_FLAG = /^(false|0|fail(ed|ure)?|error|invalid|n|no)$/i
-const FAIL_TEXT = /invalid|incorrect|wrong|not\s+(found|match|valid|exist|registered)|mismatch|expired|fail|error|does\s*n[o']t|unable|denied/i
+const FAIL_TEXT = /invalid|incorrect|wrong|\bnot\s+(be\s+)?(found|match(ed)?|valid|exists?|registered|correct|changed|updated|available|allowed|same|verified|saved)\b|mismatch|expired|fail|error|does\s*n[o']t|did\s*n[o']t|could\s*n[o']t|can\s*n?[o']?t\b|cannot|unable|denied/i
 
 /** Pulls a human-readable message out of whatever the API returned. */
 function messageOf(data: unknown): string {
   if (typeof data === 'string') return data.trim()
   if (!data || typeof data !== 'object') return ''
-  const o = data as Record<string, unknown>
-  for (const k of ['Message', 'message', 'Msg', 'msg', 'ResponseMessage', 'StatusMessage', 'ExceptionMessage', 'Error', 'error']) {
+  const o = loginRecord(data)
+  for (const k of ['Message', 'message', 'Msg', 'msg', 'msg_desc', 'MsgDesc', 'msgDesc', 'ResponseMessage', 'StatusMessage', 'ExceptionMessage', 'Error', 'error']) {
     const v = o[k]
     if (typeof v === 'string' && v.trim()) return v.trim()
   }
@@ -51,8 +51,8 @@ function messageOf(data: unknown): string {
 /** true when a 2xx response still says the operation failed. */
 function saysFailure(data: unknown, message: string): boolean {
   if (data && typeof data === 'object') {
-    const o = data as Record<string, unknown>
-    for (const k of ['Status', 'status', 'Success', 'success', 'IsSuccess', 'isSuccess', 'Result', 'result']) {
+    const o = loginRecord(data)
+    for (const k of ['msg_code', 'MsgCode', 'msgCode', 'Status', 'status', 'Success', 'success', 'IsSuccess', 'isSuccess', 'Result', 'result']) {
       const v = o[k]
       if (v === false || v === 0) return true
       if (typeof v === 'string' && FAIL_FLAG.test(v.trim())) return true
@@ -168,9 +168,23 @@ export function connectDtsApi(cfg: ServerConfig) {
     }
     const message = messageOf(data)
     const empty = data === null || data === false || (typeof data === 'string' && !data.trim()) || (Array.isArray(data) && !data.length)
-    if (res.status >= 400 || empty || saysFailure(data, message)) return { ok: false, message }
+    if (res.status >= 400 || empty || saysFailure(data, message)) {
+      // the reply only (the password is in the request URL, never logged)
+      console.warn(`[dts] Api/user/UserLogIn rejected UserCode=${userCode} HTTP ${res.status}: ${res.text.slice(0, 300)}`)
+      return { ok: false, message }
+    }
     const user = loginRecord(data)
     const userId = Number(pick(user, ['UserId', 'UserID', 'userId', 'Userid', 'USERID', 'Id', 'ID', 'id', 'InternalKey']))
+    // Never sign in on a reply that merely lacks a failure marker: it must say success or carry the user's record.
+    const code = pick(user, ['msg_code', 'MsgCode', 'msgCode'])
+    const confirmed =
+      (code !== undefined && /^(y|yes|s|success|true|1)$/i.test(String(code).trim())) ||
+      (Number.isInteger(userId) && userId > 0) ||
+      pick(user, ['UserCode', 'userCode', 'USER_CODE', 'CardCode', 'cardCode', 'CustomerCode', 'BPCode', 'CustCode']) !== undefined
+    if (!confirmed) {
+      console.warn(`[dts] Api/user/UserLogIn reply not recognised as a sign-in UserCode=${userCode}: ${res.text.slice(0, 300)}`)
+      return { ok: false, message }
+    }
     return {
       ok: true,
       message,
@@ -192,7 +206,17 @@ export function connectDtsApi(cfg: ServerConfig) {
     otpCheck: (b: Pick<ForgotPassBody, 'UserCode' | 'UserMail' | 'OTP'>) =>
       call('Api/Auth/OTPcheck', { ...b, NewPassword: '', ConfirmPassword: '' }, 'Code verified.'),
     updatePassword: (b: ForgotPassBody) => call('Api/Auth/UpdatePass', b, 'Your password has been updated.'),
-    changePassword: (b: ChangePassBody) => call('Api/user_rep/ChangePassword', b, 'Your password has been changed.'),
+    changePassword: async (b: ChangePassBody) => {
+      try {
+        const r = await call('Api/user_rep/ChangePassword', b, 'Your password has been changed.')
+        // reply only (never the passwords): the API docs don't describe it, so keep it visible in the server log
+        console.info(`[dts] ChangePassword UserId=${b.UserId} reply: ${JSON.stringify(r.data).slice(0, 300)}`)
+        return r
+      } catch (e) {
+        console.warn(`[dts] ChangePassword UserId=${b.UserId} rejected: ${(e as Error).message}`)
+        throw e
+      }
+    },
   }
 }
 

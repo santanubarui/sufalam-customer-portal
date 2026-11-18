@@ -94,6 +94,11 @@ a{color:var(--purple-700);text-decoration:none}
 .field label{display:block;font-size:.78rem;font-weight:600;color:var(--ink);margin-bottom:.35rem;letter-spacing:.2px}
 .field input,.field select,.field textarea{width:100%;border:1.5px solid var(--line);border-radius:10px;padding:.65rem .8rem;font-size:.9rem;font-family:inherit;background:#fff;color:var(--ink);outline:none;transition:.15s}
 .field input:focus,.field select:focus,.field textarea:focus{border-color:var(--green-600);box-shadow:0 0 0 3px var(--green-100)}
+/* password field with show/hide eye toggle */
+.password-input{position:relative}
+.field .password-input input{padding-right:2.6rem}
+.password-input .password-toggle{position:absolute;right:.5rem;top:50%;transform:translateY(-50%);border:0;background:none;cursor:pointer;padding:.25rem;line-height:0;color:var(--muted,#6b7280)}
+.password-input .password-toggle:hover{color:var(--ink)}
 .input-sm{border:1.5px solid var(--line);border-radius:8px;padding:.35rem .5rem;font-size:.8rem;font-family:inherit;color:var(--ink)}
 /* dd-mm-yyyy date field (components/DateInput.tsx) */
 .date-input{position:relative;display:inline-block}
