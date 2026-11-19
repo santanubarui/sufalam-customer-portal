@@ -1,18 +1,22 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Topbar } from '../components/AppLayout'
-import { Async, Card } from '../components/ui'
+import { Async, Card, Tag } from '../components/ui'
 import { DateInput } from '../components/DateInput'
+import { ItemPicker } from '../components/ItemPicker'
 import { useCustomer } from '../components/header'
 import { useToast } from '../components/toast'
 import { PRICE_UNAVAILABLE, todayIso, type SalesItem } from '../api/portal'
 import { errorMessage, getSalesItems, submitPurchaseOrder } from '../api/client'
 import { useAsync } from '../hooks/useAsync'
-import { amount, rupees } from '../utils/format'
+import { amount, fmtDate, rupees } from '../utils/format'
 
 /** Indicative only — SAP applies the actual tax codes when Sufalam approves the order. */
 const GST_RATE = 0.18
-const DRAFT_KEY = 'sufalam.poDraft'
+/** Saved drafts live on this device only (localStorage), one list per customer. */
+const DRAFTS_KEY = 'sufalam.poDrafts'
+/** Older builds kept a single draft under this key; it is migrated into the list. */
+const LEGACY_DRAFT_KEY = 'sufalam.poDraft'
 const MAX_PDF_MB = 5
 
 interface Line {
@@ -35,15 +39,39 @@ interface Header {
 
 let nextId = 1
 
-const loadDraft = (cardCode: string): { header: Header; lines: Line[] } | null => {
+type DraftLine = Omit<Line, 'id'>
+
+interface SavedDraft {
+  id: string
+  savedAt: string
+  header: Header
+  lines: DraftLine[]
+}
+
+const loadDrafts = (cardCode: string): SavedDraft[] => {
   try {
-    const raw = localStorage.getItem(`${DRAFT_KEY}.${cardCode}`)
-    if (!raw) return null
-    const d = JSON.parse(raw) as { header: Header; lines: Omit<Line, 'id'>[] }
-    return { header: d.header, lines: d.lines.map((l) => ({ ...l, manualRate: l.manualRate ?? '', id: nextId++ })) }
+    const raw = localStorage.getItem(`${DRAFTS_KEY}.${cardCode}`)
+    const list = raw ? (JSON.parse(raw) as SavedDraft[]) : []
+    const legacy = localStorage.getItem(`${LEGACY_DRAFT_KEY}.${cardCode}`)
+    if (legacy) {
+      const d = JSON.parse(legacy) as { header: Header; lines: DraftLine[] }
+      list.unshift({ id: `legacy-${Date.now()}`, savedAt: new Date().toISOString(), header: d.header, lines: d.lines })
+      localStorage.setItem(`${DRAFTS_KEY}.${cardCode}`, JSON.stringify(list))
+      localStorage.removeItem(`${LEGACY_DRAFT_KEY}.${cardCode}`)
+    }
+    return list.map((d) => ({ ...d, lines: d.lines.map((l) => ({ ...l, manualRate: l.manualRate ?? '' })) }))
   } catch {
-    return null
+    return []
   }
+}
+
+/** Throws when browser storage is unavailable. */
+const writeDrafts = (cardCode: string, list: SavedDraft[]) =>
+  localStorage.setItem(`${DRAFTS_KEY}.${cardCode}`, JSON.stringify(list))
+
+const savedAtText = (iso: string) => {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })
 }
 
 export default function CreatePO() {
@@ -57,7 +85,7 @@ export default function CreatePO() {
         <Async state={items} label="Loading your price list from SAP…">
           {(list) =>
             list.length ? (
-              <POForm items={list} />
+              <POWorkspace items={list} />
             ) : (
               <Card>
                 <div className="bd muted">No sellable items were found in SAP for your account.</div>
@@ -70,12 +98,155 @@ export default function CreatePO() {
   )
 }
 
-function POForm({ items }: { items: SalesItem[] }) {
+/** Saved-drafts list + the PO form. Editing a draft loads it into the form; saving again updates that draft. */
+function POWorkspace({ items }: { items: SalesItem[] }) {
+  const customer = useCustomer()
+  const toast = useToast()
+  const [drafts, setDrafts] = useState<SavedDraft[]>(() => loadDrafts(customer.code))
+  const [editingId, setEditingId] = useState<string | null>(null)
+  /** Bumped to remount the form with fresh initial values. */
+  const [formKey, setFormKey] = useState(0)
+
+  const byCode = useMemo(() => new Map(items.map((i) => [i.code, i])), [items])
+  const draftValue = (d: SavedDraft) =>
+    d.lines.reduce((s, l) => {
+      const rate = l.manualRate.trim() ? Number(l.manualRate) : byCode.get(l.code)?.rate
+      const amt = (rate ?? 0) * l.qty
+      return s + (Number.isFinite(amt) && amt > 0 ? amt : 0)
+    }, 0)
+
+  const persist = (next: SavedDraft[]) => {
+    writeDrafts(customer.code, next)
+    setDrafts(next)
+  }
+
+  const startNew = () => {
+    setEditingId(null)
+    setFormKey((k) => k + 1)
+  }
+
+  const edit = (id: string) => {
+    setEditingId(id)
+    setFormKey((k) => k + 1)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  const remove = (d: SavedDraft) => {
+    const po = d.header.poNumber.trim()
+    if (!window.confirm(`Delete the saved draft${po ? ` for PO ${po}` : ''}?`)) return
+    try {
+      persist(drafts.filter((x) => x.id !== d.id))
+      if (editingId === d.id) startNew()
+      toast.success('Draft deleted', 'The saved draft was removed from this device.')
+    } catch {
+      toast.error('Could not delete draft', 'Browser storage is unavailable.')
+    }
+  }
+
+  const save = (header: Header, lines: DraftLine[]) => {
+    const id = editingId ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const draft: SavedDraft = { id, savedAt: new Date().toISOString(), header, lines }
+    try {
+      persist([draft, ...drafts.filter((x) => x.id !== id)])
+      setEditingId(id)
+      toast.success(
+        editingId ? 'Draft updated' : 'Draft saved',
+        'Find it under Saved drafts on this page. Attach the PDF again before submitting.',
+      )
+    } catch {
+      toast.error('Could not save draft', 'Browser storage is unavailable.')
+    }
+  }
+
+  const submitted = () => {
+    if (!editingId) return
+    try {
+      persist(drafts.filter((x) => x.id !== editingId))
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const editing = drafts.find((d) => d.id === editingId) ?? null
+
+  return (
+    <>
+      {drafts.length > 0 && (
+        <Card title="Saved drafts" className="mb" actions={<span className="hint">saved on this device · not yet sent to Sufalam</span>}>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>PO number</th>
+                  <th>PO date</th>
+                  <th className="num">Lines</th>
+                  <th className="num">Value (excl. GST)</th>
+                  <th>Last saved</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {drafts.map((d) => (
+                  <tr key={d.id}>
+                    <td>
+                      <b>{d.header.poNumber.trim() || 'Untitled draft'}</b>
+                      {d.id === editingId && (
+                        <>
+                          {' '}
+                          <Tag tone="p">Editing</Tag>
+                        </>
+                      )}
+                    </td>
+                    <td>{fmtDate(d.header.poDate)}</td>
+                    <td className="num">{d.lines.length}</td>
+                    <td className="num">{rupees(draftValue(d))}</td>
+                    <td>{savedAtText(d.savedAt)}</td>
+                    <td className="num" style={{ whiteSpace: 'nowrap' }}>
+                      <button type="button" className="linkbtn" onClick={() => edit(d.id)} disabled={d.id === editingId}>
+                        ✎ Edit
+                      </button>{' '}
+                      <button type="button" className="linkbtn" onClick={() => remove(d)}>
+                        ✕ Delete
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+      <POForm
+        key={formKey}
+        items={items}
+        draft={editing}
+        onNew={editingId ? startNew : undefined}
+        onSaveDraft={save}
+        onSubmitted={submitted}
+      />
+    </>
+  )
+}
+
+function POForm({
+  items,
+  draft,
+  onNew,
+  onSaveDraft,
+  onSubmitted,
+}: {
+  items: SalesItem[]
+  draft: SavedDraft | null
+  onNew?: () => void
+  onSaveDraft: (header: Header, lines: DraftLine[]) => void
+  onSubmitted: () => void
+}) {
   const customer = useCustomer()
   const toast = useToast()
   const navigate = useNavigate()
 
-  const saved = useMemo(() => loadDraft(customer.code), [customer.code])
+  // Only the draft the form was mounted with is loaded; the parent remounts the form (new key) to load another.
+  const [saved] = useState(() => (draft ? { header: draft.header, lines: draft.lines.map((l) => ({ ...l, id: nextId++ })) } : null))
   const blankHeader: Header = {
     poNumber: '',
     poDate: todayIso(),
@@ -143,17 +314,7 @@ function POForm({ items }: { items: SalesItem[] }) {
     return ''
   }
 
-  const saveDraft = () => {
-    try {
-      localStorage.setItem(
-        `${DRAFT_KEY}.${customer.code}`,
-        JSON.stringify({ header, lines: lines.map(({ code, qty, date, manualRate }) => ({ code, qty, date, manualRate })) }),
-      )
-      toast.success('Draft saved', 'Your PO is saved on this device. Attach the PDF again before submitting.')
-    } catch {
-      toast.error('Could not save draft', 'Browser storage is unavailable.')
-    }
-  }
+  const saveDraft = () => onSaveDraft(header, lines.map(({ code, qty, date, manualRate }) => ({ code, qty, date, manualRate })))
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -181,11 +342,7 @@ function POForm({ items }: { items: SalesItem[] }) {
         file,
       )
 
-      try {
-        localStorage.removeItem(`${DRAFT_KEY}.${customer.code}`)
-      } catch {
-        /* ignore */
-      }
+      onSubmitted()
       toast.success('PO submitted to Sufalam', `PO ${header.poNumber.trim()} saved in SAP as draft #${docNum} — awaiting approval.`)
       if (attachWarning) toast.error('PO copy was not attached', `The order was created, but the PDF upload failed: ${attachWarning}`)
       navigate('/orders')
@@ -200,7 +357,17 @@ function POForm({ items }: { items: SalesItem[] }) {
 
   return (
     <form onSubmit={onSubmit} noValidate>
-      <Card title="PO header" className="mb">
+      <Card
+        title={draft ? `PO header · editing draft${draft.header.poNumber.trim() ? ` ${draft.header.poNumber.trim()}` : ''}` : 'PO header'}
+        className="mb"
+        actions={
+          onNew && (
+            <button type="button" className="linkbtn" onClick={onNew}>
+              ＋ New PO
+            </button>
+          )
+        }
+      >
         <div className="bd">
           <div className="grid3">
             <div className="field">
@@ -267,14 +434,7 @@ function POForm({ items }: { items: SalesItem[] }) {
                 return (
                   <tr key={l.id}>
                     <td>
-                      <select className="input-sm" value={it.code} onChange={(e) => update(l.id, { code: e.target.value, manualRate: sapRateText(e.target.value) })}>
-                        {items.map((p) => (
-                          <option key={p.code} value={p.code}>
-                            {p.name}
-                          </option>
-                        ))}
-                      </select>
-                      <br />
+                      <ItemPicker items={items} value={it.code} onChange={(code) => update(l.id, { code, manualRate: sapRateText(code) })} />
                       <small>
                         {it.code}
                         {it.unit ? ` · per ${it.unit}` : ''}
@@ -373,7 +533,7 @@ function POForm({ items }: { items: SalesItem[] }) {
           <div className="btn-row">
             <span className="spacer" />
             <button type="button" className="btn btn-ghost" onClick={saveDraft} disabled={busy}>
-              Save draft
+              {draft ? 'Update draft' : 'Save draft'}
             </button>
             <button type="submit" className="btn btn-grad" disabled={busy}>
               {busy ? 'Submitting to SAP…' : 'Submit to Sufalam →'}

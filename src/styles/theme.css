@@ -353,3 +353,24 @@ button:disabled{opacity:.6;cursor:not-allowed}
   .theme-bar,.side,.app-header,.topbar button,.toasts,.card .hd input,.card .hd button{display:none!important}
   .main{margin:0!important}
 }
+
+/* ===== part payments ===== */
+.pi-amt small{display:block;font-family:'Inter',sans-serif;font-weight:500;font-size:.7rem;color:var(--muted);margin:.1rem 0 .3rem}
+.pi-card .info small.pi-split{color:var(--ink)}
+.pi-split .paid{color:var(--green-700)}
+.pi-split .due{color:var(--amber)}
+.pay-status{display:inline-flex;flex-direction:column;gap:.2rem;align-items:flex-start}
+.pay-status small{font-size:.7rem;color:var(--muted);white-space:nowrap}
+
+/* ===== searchable item picker ===== */
+.ss{position:relative;width:100%}
+.ss-btn{width:100%;text-align:left;background:var(--white);display:flex;justify-content:space-between;align-items:center;gap:.4rem}
+.ss-btn span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ss-pop{position:fixed;z-index:60;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);padding:.4rem}
+.ss-pop input{width:100%;margin-bottom:.3rem}
+.ss-list{max-height:240px;overflow-y:auto;list-style:none}
+.ss-list li{padding:.4rem .55rem;border-radius:6px;font-size:.8rem;cursor:pointer;display:flex;justify-content:space-between;gap:.6rem}
+.ss-list li small{color:var(--muted);font-size:.7rem;flex:none}
+.ss-list li.active{background:var(--green-50)}
+.ss-list li.sel{font-weight:600;color:var(--green-700)}
+.ss-empty,.ss-more{padding:.4rem .55rem;font-size:.74rem;color:var(--muted)}

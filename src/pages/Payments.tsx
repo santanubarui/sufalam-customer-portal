@@ -4,6 +4,7 @@ import { Async, Card, EmptyRow, Tag } from '../components/ui'
 import { useCustomer } from '../components/header'
 import { useToast } from '../components/toast'
 import { getPayments, getPendingProformas } from '../api/client'
+import type { Payment } from '../api/portal'
 import { useAsync } from '../hooks/useAsync'
 import { amount, fmtDate, rupees } from '../utils/format'
 
@@ -41,9 +42,23 @@ export default function Payments() {
                             {pi.pi} · against {pi.ref}
                           </b>
                           <small>{pi.details}</small>
-                          <small className="cta">Pay to release dispatch — delivery is posted once payment is received</small>
+                          {pi.paid > 0 && (
+                            <small className="pi-split">
+                              Full amount <b>{rupees(pi.total)}</b> · Paid <b className="paid">{rupees(pi.paid)}</b> · Balance{' '}
+                              <b className="due">{rupees(pi.amount)}</b>
+                            </small>
+                          )}
+                          <small className="cta">
+                            {pi.paid > 0
+                              ? 'Part payment received — pay the balance to release dispatch'
+                              : 'Pay to release dispatch — delivery is posted once payment is received'}
+                          </small>
                         </div>
-                        <div className="pi-amt">{rupees(pi.amount)}</div>
+                        <div className="pi-amt">
+                          {rupees(pi.amount)}
+                          <small>{pi.paid > 0 ? `balance of ${rupees(pi.total)}` : 'full amount'}</small>
+                          {pi.paid > 0 && <Tag tone="a">Part paid</Tag>}
+                        </div>
                         <div className="pi-actions">
                           <button className="btn btn-ghost" onClick={() => setOpenPi(openPi === pi.docEntry ? null : pi.docEntry)}>
                             {openPi === pi.docEntry ? 'Hide PI' : 'View PI'}
@@ -110,7 +125,9 @@ export default function Payments() {
                         <td>
                           <b>{p.receipt}</b>
                         </td>
-                        <td>{p.cancelled ? <Tag tone="r">Cancelled</Tag> : <Tag tone="g">Posted</Tag>}</td>
+                        <td>
+                          <PaymentStatus p={p} />
+                        </td>
                       </tr>
                     ))}
                     {list.length === 0 && <EmptyRow cols={7}>No payments recorded in SAP yet.</EmptyRow>}
@@ -126,4 +143,20 @@ export default function Payments() {
       </div>
     </>
   )
+}
+
+function PaymentStatus({ p }: { p: Payment }) {
+  if (p.cancelled) return <Tag tone="r">Cancelled</Tag>
+  if (p.settlement === 'full') return <Tag tone="g">Fully paid</Tag>
+  if (p.settlement === 'part')
+    return (
+      <span className="pay-status">
+        <Tag tone="a">Part paid</Tag>
+        <small>
+          {rupees(p.docTotal ?? 0)} total · {rupees(p.docBalance ?? 0)} due
+        </small>
+      </span>
+    )
+  if (p.onAccount) return <Tag tone="p">On account</Tag>
+  return <Tag tone="g">Posted</Tag>
 }

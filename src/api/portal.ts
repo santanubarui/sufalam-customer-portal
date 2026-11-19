@@ -201,12 +201,14 @@ interface SapDocument {
   DocumentStatus: 'bost_Open' | 'bost_Close' | 'bost_Paid' | 'bost_Delivered'
   Cancelled?: 'tYES' | 'tNO'
   Comments: string | null
+  /** SAP JrnlMemo — holds the SAP SO number shown to the customer */
+  JournalMemo?: string | null
   AttachmentEntry?: number | null
   DocumentLines?: DocLine[]
 }
 
 const DOC_SELECT =
-  'DocEntry,DocNum,NumAtCard,DocDate,DocDueDate,DocTotal,DocumentStatus,Cancelled,Comments,AttachmentEntry,DocumentLines'
+  'DocEntry,DocNum,NumAtCard,DocDate,DocDueDate,DocTotal,DocumentStatus,Cancelled,Comments,JournalMemo,AttachmentEntry,DocumentLines'
 
 const termsFrom = (comments: string | null) => comments?.match(/Delivery terms:\s*([^·|\n]+)/i)?.[1].trim() ?? '—'
 
@@ -227,7 +229,7 @@ function mapOrder(d: SapDocument, isDraft: boolean): Order {
   return {
     key: `${isDraft ? 'D' : 'O'}${d.DocEntry}`,
     docEntry: d.DocEntry,
-    so: isDraft ? null : `SO-${d.DocNum}`,
+    so: isDraft ? null : d.JournalMemo?.trim() || `SO-${d.DocNum}`,
     po: d.NumAtCard || (isDraft ? `Draft ${d.DocNum}` : '—'),
     item,
     qty,
@@ -570,30 +572,53 @@ export interface ProformaInvoice {
   pi: string
   ref: string
   details: string
+  /** Balance still to pay (DocTotal − PaidToDate). */
   amount: number
+  /** Full PI value. */
+  total: number
+  /** Already received against this PI (part payments). */
+  paid: number
   lines: { item: string; qty: string; total: number }[]
 }
 
 export async function getPendingProformas(cardCode: string, signal?: AbortSignal): Promise<ProformaInvoice[]> {
   const docs = await sapList<SapDocument>(
     odata('DownPayments', {
-      select: 'DocEntry,DocNum,NumAtCard,DocDate,DocDueDate,DocTotal,PaidToDate,Comments,DocumentLines',
+      select: 'DocEntry,DocNum,NumAtCard,DocDate,DocDueDate,DocTotal,PaidToDate,Comments,JournalMemo,DocumentLines',
       filter: `CardCode eq ${lit(cardCode)} and DocumentStatus eq 'bost_Open' and DownPaymentType eq 'dptRequest'`,
       orderby: 'DocDueDate',
     }),
     { pageSize: 50, maxPages: 2, signal },
   )
+
+  // JrnlMemo of each base sales order — that is the SO number the customer knows
+  const baseOf = (d: SapDocument) => d.DocumentLines?.find((l) => l.BaseType === 17)?.BaseEntry
+  const soEntries = [...new Set(docs.map(baseOf).filter((e): e is number => e != null))]
+  const soMemo = new Map<number, string>()
+  if (soEntries.length) {
+    const orders = await sapList<Pick<SapDocument, 'DocEntry' | 'DocNum' | 'JournalMemo'>>(
+      odata('Orders', {
+        select: 'DocEntry,DocNum,JournalMemo',
+        filter: `CardCode eq ${lit(cardCode)} and (${soEntries.map((e) => `DocEntry eq ${e}`).join(' or ')})`,
+      }),
+      { pageSize: 50, maxPages: 2, signal },
+    )
+    for (const o of orders) soMemo.set(o.DocEntry, o.JournalMemo?.trim() || `sales order #${o.DocNum}`)
+  }
+
   return docs.map((d) => {
     const { item, qty } = lineSummary(d.DocumentLines)
-    const baseSo = d.DocumentLines?.find((l) => l.BaseType === 17)?.BaseEntry
+    const baseSo = baseOf(d)
     return {
       docEntry: d.DocEntry,
-      pi: `PI-${d.DocNum}`,
-      ref: baseSo ? `sales order #${baseSo}` : d.NumAtCard ? `PO ${d.NumAtCard}` : 'your order',
+      pi: d.JournalMemo?.trim() || `PI-${d.DocNum}`,
+      ref: baseSo != null ? soMemo.get(baseSo) ?? `sales order #${baseSo}` : d.NumAtCard ? `PO ${d.NumAtCard}` : 'your order',
       details: [`Raised ${dmy(d.DocDate)}`, `due ${dmy(d.DocDueDate)}`, `${item} · ${qty}`, d.Comments]
         .filter(Boolean)
         .join(' · '),
       amount: n(d.DocTotal) - n(d.PaidToDate),
+      total: n(d.DocTotal),
+      paid: n(d.PaidToDate),
       lines: (d.DocumentLines ?? []).map((l) => ({
         item: l.ItemDescription || l.ItemCode,
         qty: `${fmtQty(n(l.Quantity))} ${unitOf(l)}`.trim(),
@@ -613,6 +638,14 @@ export interface Payment {
   amount: number
   onAccount: boolean
   cancelled: boolean
+  /**
+   * How the documents this payment was applied to stand now:
+   * 'full' = every one is fully paid, 'part' = something is still due, null = on account / not checked.
+   */
+  settlement?: 'full' | 'part' | null
+  /** Full value and remaining balance of the documents this payment was applied to. */
+  docTotal?: number
+  docBalance?: number
 }
 
 interface SapPayment {
@@ -622,6 +655,7 @@ interface SapPayment {
   CashSum: number
   TransferSum: number
   TransferReference: string | null
+  JournalRemarks?: string | null
   Cancelled: 'tYES' | 'tNO'
   PaymentInvoices?: { DocEntry: number; SumApplied: number; InvoiceType: string }[]
   PaymentChecks?: { CheckSum: number }[]
@@ -640,9 +674,9 @@ function mapPayment(p: SapPayment): Payment {
   const docs = p.PaymentInvoices ?? []
   return {
     docEntry: p.DocEntry,
-    receipt: `ORCT-${p.DocNum}`,
+    receipt: String(p.DocNum),
     date: isoDay(p.DocDate),
-    ref: docs.length ? `Against ${docs.length} document${docs.length > 1 ? 's' : ''}` : 'Advance on account',
+    ref: p.JournalRemarks?.trim() || (docs.length ? `Against ${docs.length} document${docs.length > 1 ? 's' : ''}` : 'Advance on account'),
     mode: parts.length === 1 ? parts[0][0] : parts.length ? 'Mixed' : '—',
     txnRef: p.TransferReference || '—',
     amount: parts.reduce((s, [, v]) => s + v, 0),
@@ -652,14 +686,65 @@ function mapPayment(p: SapPayment): Payment {
 }
 
 const PAYMENT_SELECT =
-  'DocEntry,DocNum,DocDate,CashSum,TransferSum,TransferReference,Cancelled,PaymentInvoices,PaymentChecks,PaymentCreditCards'
+  'DocEntry,DocNum,DocDate,CashSum,TransferSum,TransferReference,JournalRemarks,Cancelled,PaymentInvoices,PaymentChecks,PaymentCreditCards'
 
 export async function getPayments(cardCode: string, signal?: AbortSignal): Promise<Payment[]> {
   const docs = await sapList<SapPayment>(
     odata('IncomingPayments', { select: PAYMENT_SELECT, filter: `CardCode eq ${lit(cardCode)}`, orderby: 'DocEntry desc' }),
     { pageSize: 100, maxPages: 1, signal },
   )
-  return docs.map(mapPayment)
+
+  // Look up the documents each payment settled, to tell "fully paid" from "part paid".
+  const entity = (t: string) => (t === 'it_Invoice' ? 'Invoices' : t === 'it_DownPayment' ? 'DownPayments' : null)
+  const wanted = new Map<string, Set<number>>()
+  for (const p of docs) {
+    if (p.Cancelled === 'tYES') continue
+    for (const l of p.PaymentInvoices ?? []) {
+      const e = entity(l.InvoiceType)
+      if (!e) continue
+      if (!wanted.has(e)) wanted.set(e, new Set())
+      wanted.get(e)!.add(l.DocEntry)
+    }
+  }
+  const status = new Map<string, { total: number; paid: number }>()
+  await Promise.all(
+    [...wanted].flatMap(([e, set]) => {
+      const ids = [...set]
+      const chunks: number[][] = []
+      for (let i = 0; i < ids.length; i += 20) chunks.push(ids.slice(i, i + 20))
+      return chunks.map(async (chunk) => {
+        try {
+          const rows = await sapList<Pick<SapDocument, 'DocEntry' | 'DocTotal' | 'PaidToDate'>>(
+            odata(e, {
+              select: 'DocEntry,DocTotal,PaidToDate',
+              filter: `CardCode eq ${lit(cardCode)} and (${chunk.map((id) => `DocEntry eq ${id}`).join(' or ')})`,
+            }),
+            { pageSize: 50, maxPages: 1, signal },
+          )
+          for (const r of rows) status.set(`${e}:${r.DocEntry}`, { total: n(r.DocTotal), paid: n(r.PaidToDate) })
+        } catch (err) {
+          if (signal?.aborted) throw err
+          // status is a nice-to-have; leave these payments without a settlement
+        }
+      })
+    }),
+  )
+
+  return docs.map((p) => {
+    const base = mapPayment(p)
+    if (base.cancelled || base.onAccount) return base
+    let total = 0
+    let paid = 0
+    for (const l of p.PaymentInvoices ?? []) {
+      const e = entity(l.InvoiceType)
+      const s = e ? status.get(`${e}:${l.DocEntry}`) : undefined
+      if (!s) return base
+      total += s.total
+      paid += s.paid
+    }
+    const balance = Math.max(0, Math.round((total - paid) * 100) / 100)
+    return { ...base, settlement: balance < 0.01 ? 'full' : 'part', docTotal: total, docBalance: balance }
+  })
 }
 
 /* =====================================================================
@@ -689,7 +774,7 @@ function mapDelivery(d: SapDocument): Delivery {
   const { item, qty } = lineSummary(d.DocumentLines)
   return {
     docEntry: d.DocEntry,
-    dn: `DLN-${d.DocNum}`,
+    dn: d.JournalMemo?.trim() || `DLN-${d.DocNum}`,
     ref: d.NumAtCard ? `PO ${d.NumAtCard}` : '',
     date: isoDay(d.DocDate),
     value: n(d.DocTotal),
@@ -701,7 +786,7 @@ function mapDelivery(d: SapDocument): Delivery {
   }
 }
 
-const DELIVERY_SELECT = 'DocEntry,DocNum,NumAtCard,DocDate,DocTotal,Comments,AttachmentEntry,DocumentLines'
+const DELIVERY_SELECT = 'DocEntry,DocNum,NumAtCard,DocDate,DocTotal,Comments,JournalMemo,AttachmentEntry,DocumentLines'
 
 /** One delivery, only if it belongs to `cardCode` (otherwise reported as not found). */
 export async function getDelivery(cardCode: string, docEntry: number): Promise<Delivery> {
